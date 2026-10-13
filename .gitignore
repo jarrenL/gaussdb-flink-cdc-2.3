@@ -1,0 +1,9 @@
+target/
+.idea/
+*.iml
+*.jar
+*.log
+*.properties
+!*.example.properties
+.DS_Store
+build-reports/
