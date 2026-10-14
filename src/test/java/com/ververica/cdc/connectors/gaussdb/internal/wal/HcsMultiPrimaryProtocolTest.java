@@ -64,6 +64,44 @@ class HcsMultiPrimaryProtocolTest {
     private static final String FIRST = "0/64,0/2,0/1000";
 
     @Test
+    @SuppressWarnings("unchecked")
+    void tenantStartupOnlyIncludesReplicationWhenExplicitlyRequestedWithCompatibleAssumption()
+            throws Exception {
+        java.lang.reflect.Method parameters =
+                com.huawei.gaussdb.jdbc.core.v3.ConnectionFactoryImpl.class.getDeclaredMethod(
+                        "getParametersForStartup", String.class, String.class, Properties.class);
+        parameters.setAccessible(true);
+        for (String assumedVersion : new String[] {null, "9.2.4", "9.4"}) {
+            for (boolean replicationRequested : new boolean[] {false, true}) {
+                Properties properties = new Properties();
+                if (assumedVersion != null) {
+                    properties.setProperty("assumeMinServerVersion", assumedVersion);
+                }
+                if (replicationRequested) {
+                    properties.setProperty("replication", "database");
+                }
+                List<String[]> startup =
+                        (List<String[]>)
+                                parameters.invoke(
+                                        new com.huawei.gaussdb.jdbc.core.tenant
+                                                .TenantConnectionFactoryImpl(),
+                                        "probe_user",
+                                        "probe_database",
+                                        properties);
+                List<String> replicationValues = new ArrayList<>();
+                for (String[] entry : startup) {
+                    if ("replication".equals(entry[0])) replicationValues.add(entry[1]);
+                }
+                if (replicationRequested && "9.4".equals(assumedVersion)) {
+                    assertThat(replicationValues).containsExactly("database");
+                } else {
+                    assertThat(replicationValues).isEmpty();
+                }
+            }
+        }
+    }
+
+    @Test
     void real507TenantProtocolInheritsStartLogicalAndSendsStartReplication() throws Exception {
         QueryExecutor executor = mock(QueryExecutor.class);
         TenantConnection tenant = mock(TenantConnection.class);

@@ -18,6 +18,52 @@
 此前代码注释对“租户 API 自动选择正确复制入口”的表述过强，已改正。
 本次提交提供驱动回归证据和诊断工具，**不声称 9049 已修复或真机采集已通过**。
 
+## 最新内网复测与握手证据
+
+内网已完成诊断，确认原始驱动 SHA-256 相同，运行时连接为 TenantConnection、cloudNative=true，
+协议为 MultiPrimaryReplicationProtocol，builder 为 MultiPrimaryLogicalStreamBuilder。
+槽唯一匹配、类型 logical、插件 parallel_binary_decoding。这可以关闭 R1 的协议类型排查。
+
+但这不等于“客户端连接配置全部正确”，也不等于“服务端不支持外部复制”。
+协议对象类型和服务器会话模式是两个不同层面。
+
+本地进一步直接调用配套驱动 TenantConnectionFactoryImpl 所继承的启动参数构造方法
+`ConnectionFactoryImpl.getParametersForStartup`，得到以下六组结果（无网络连接）：
+
+| replication 属性 | assumeMinServerVersion 属性 | 启动包包含 replication=database |
+| --- | --- | --- |
+| 未设置 | 未设置 | 否 |
+| database | 未设置 | 否 |
+| 未设置 | 9.2.4 | 否 |
+| database | 9.2.4 | 否 |
+| 未设置 | 9.4 | 否 |
+| database | 9.4 | 是 |
+
+该驱动版本的判断依据是客户端 **assumeMinServerVersion 属性**，不是刚查询到的服务端版本。
+诊断中的 `server.version=9.2.4` 是 JDBC 返回的版本字段，不能用来替换 Kernel 507.1.0 产品版本，
+也不能据此判断产品缺少某项功能。设置 assumeMinServerVersion 只是驱动行为配置，不会升级数据库。
+
+对应回归测试：
+`HcsMultiPrimaryProtocolTest.tenantStartupOnlyIncludesReplicationWhenExplicitlyRequestedWithCompatibleAssumption`。
+
+当前 HCS 普通连接没有设置上述两个属性，所以这次诊断没有建立复制模式连接。
+更早的新建复制连接分支已通过 URL 同时发送 replication=database、assumeMinServerVersion=9.4
+和 preferQueryMode=simple，却触发 thread_pool 拒绝。**仅恢复这些参数并重复连接同一入口，
+不是已经验证的修复。** 后续需要确认支持复制握手的正式入口、CMS 路由或目标版本所需配置/补丁。
+
+R4 的说法也需要收窄：`startCopy → processCopyResults → receiveErrorResponse` 只能证明客户端
+发起命令后读到了错误，不能证明 COPY 已成功启动。驱动 startCopy 先发送 Query 消息，再等待服务端
+接受或拒绝；当前尚无成功进入复制流的证据。
+
+可直接转给产品工程师的补充问题：
+
+> 已确认配套 507 驱动和运行时 MultiPrimary 协议均正确。普通租户 SQL 连接启动复制时返回 9049；
+> 通过 CMS 新建连接并同时设置 replication=database、assumeMinServerVersion=9.4、
+> preferQueryMode=simple 时则被 thread_pool 拒绝。请确认 Kernel 507.1.0 当前 CloudNative
+> 透明多写补丁支持的外部逻辑复制接入路径：如何通过 CMS/租户服务得到可进行复制启动握手的入口，
+> 需要哪些服务端配置和客户端参数？如当前形态不支持，请明确能力边界；如支持，请提供能够成功 start()
+> 的最小 Java 示例，并由服务端日志确认连接类型和拒绝节点。请勿仅根据 Java 协议类判定已进入复制会话。
+
 ## 1. 已收到的真机观察（脱敏摘要）
 
 - 服务端反馈版本：GaussDB Kernel 507.1.0，集中式 CloudNative 透明多写部署。

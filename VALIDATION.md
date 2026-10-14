@@ -9,6 +9,11 @@
 最终 all.jar 的 `HcsConnectionDiagnostics --driver-only` 执行成功，确认多写协议继承 V3 的 startLogical。
 诊断工具的数据库连接模式仍待内网运行；本次没有重跑其余三个引擎版本，也没有完成真机复制验证。
 
+后续内网诊断已返回：驱动哈希、租户连接、MultiPrimary 协议和 builder 均匹配，槽唯一存在。
+新增六组真实驱动启动参数构造回归，确认复制标志与 assumeMinServerVersion 的组合条件；
+默认 Flink 1.16.3 的 `mvn verify` 共 113 项通过（失败/错误/跳过均为 0）。
+这仍不证明复制入口可用；复制会话入口及握手问题等待目标环境确认。
+
 日期：2026-10-14。JDK 11，Maven，507 CloudNative JDBC。
 
 本仓库使用官方 `com.ververica:flink-connector-debezium:2.3.0`；没有修改 CDC 2.3 框架源码。
