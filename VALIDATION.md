@@ -1,17 +1,30 @@
 # 验证记录
 
-日期：2026-10-13。JDK 11，Maven，507 CloudNative JDBC。
+日期：2026-10-14。JDK 11，Maven，507 CloudNative JDBC。
 
 本仓库使用官方 `com.ververica:flink-connector-debezium:2.3.0`；没有修改 CDC 2.3 框架源码。
 
 | Flink 引擎 | 编译 / 打包 | 自动测试 | 失败 / 错误 / 跳过 |
 | --- | --- | --- | --- |
-| 1.13.6 | 通过 | 107 | 0 / 0 / 0 |
-| 1.14.6 | 通过 | 107 | 0 / 0 / 0 |
-| 1.15.4 | 通过 | 107 | 0 / 0 / 0 |
-| 1.16.3 | 通过 | 107 | 0 / 0 / 0 |
+| 1.13.6 | 通过 | 111 | 0 / 0 / 0 |
+| 1.14.6 | 通过 | 111 | 0 / 0 / 0 |
+| 1.15.4 | 通过 | 111 | 0 / 0 / 0 |
+| 1.16.3 | 通过 | 111 | 0 / 0 / 0 |
 
 执行命令：`scripts/verify-matrix.sh`。每个版本均运行全部测试，最后保留 1.16.3 构建结果。
+
+## 内网联调反馈修复
+
+根据用户提供的透明多写真机错误及槽查询验证结果，修复两处初始化路径：
+
+- 槽检查使用 `pg_get_replication_slots()`，避免查询被路由到 DN 上不存在的 `pg_replication_slots` 视图。
+- HCS 复用已有租户连接的复制 API，避免带 `replication=database` 新连 CMS 时触发
+  `Replication should connect port not in thread_pool.`。非 HCS 仍新建独立复制连接。
+
+`HcsMultiPrimaryProtocolTest` 使用真实 507 租户 builder 和受控 JDBC 连接，验证不重新连接 CMS、
+完整传入恢复位点、关闭流不关闭借用连接、初始化失败禁止 SQL 回退、缺槽明确失败，以及普通模式
+独立连接的创建和释放。重复关闭不重复释放复制流或独立连接。
+这些回归验证了客户端修复；修复后的真实 HCS 启动及增量采集仍需内网复测。
 
 ## 关键证据
 

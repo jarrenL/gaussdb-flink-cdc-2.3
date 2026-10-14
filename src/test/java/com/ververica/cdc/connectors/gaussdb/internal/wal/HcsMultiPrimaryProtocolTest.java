@@ -21,8 +21,9 @@ package com.ververica.cdc.connectors.gaussdb.internal.wal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -159,65 +160,25 @@ class HcsMultiPrimaryProtocolTest {
         }
     }
 
-    @Test
-    void restoredTripleReachesNativeBuilderAndTenantPropertiesReachConnection() throws Exception {
-        Session session = new Session(FIRST);
+    private static BaseConnection tenantConnection(boolean slotExists) throws Exception {
         BaseConnection base = mock(BaseConnection.class);
-        ReplicationProtocol protocol = mock(ReplicationProtocol.class);
         when(base.tacGetQueryExecutor())
                 .thenReturn(mock(com.huawei.gaussdb.jdbc.core.QueryExecutor.class));
         TenantReplicationConnectionImpl tenantApi = new TenantReplicationConnectionImpl(base);
         when(base.getReplicationAPI()).thenReturn(tenantApi);
-        when(base.getReplicationProtocol()).thenReturn(protocol);
-        when(protocol.startLogical(any())).thenReturn(session.nativeStream);
-        Properties[] captured = {null};
-        Driver driver =
-                new Driver() {
-                    public boolean acceptsURL(String url) {
-                        return url.startsWith("jdbc:hcs-test:");
-                    }
-
-                    public Connection connect(String url, Properties p) {
-                        if (!acceptsURL(url)) {
-                            return null;
-                        }
-                        captured[0] = p;
-                        return base;
-                    }
-
-                    public DriverPropertyInfo[] getPropertyInfo(String url, Properties p) {
-                        return new DriverPropertyInfo[0];
-                    }
-
-                    public int getMajorVersion() {
-                        return 1;
-                    }
-
-                    public int getMinorVersion() {
-                        return 0;
-                    }
-
-                    public boolean jdbcCompliant() {
-                        return false;
-                    }
-
-                    public Logger getParentLogger() {
-                        return Logger.getGlobal();
-                    }
-                };
-        Connection sql = mock(Connection.class);
         PreparedStatement statement = mock(PreparedStatement.class);
         ResultSet result = mock(ResultSet.class);
-        when(sql.prepareStatement(anyString())).thenReturn(statement);
+        when(base.prepareStatement("SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?"))
+                .thenReturn(statement);
         when(statement.executeQuery()).thenReturn(result);
-        when(result.next()).thenReturn(true);
-        Properties tenant = new Properties();
-        tenant.setProperty("connectMode", "auth");
-        tenant.setProperty("tenantName", "tenant");
-        tenant.setProperty("tenantPassword", "tenant-secret");
+        when(result.next()).thenReturn(slotExists);
+        return base;
+    }
+
+    private static WalReplicationStream connector(Connection connection, boolean hcs) {
         WalReplicationStream wal =
                 new WalReplicationStream(
-                        sql,
+                        connection,
                         "jdbc:hcs-test:test",
                         "user",
                         "db-secret",
@@ -227,27 +188,169 @@ class HcsMultiPrimaryProtocolTest {
                         "j",
                         false,
                         100);
-        wal.setHcsMultiPrimary(true, tenant);
+        Properties properties = new Properties();
+        properties.setProperty("connectMode", "auth");
+        properties.setProperty("tenantName", "tenant");
+        properties.setProperty("tenantPassword", "tenant-secret");
+        wal.setHcsMultiPrimary(hcs, properties);
+        return wal;
+    }
+
+    private static class RecordingDriver implements Driver {
+        private final Connection connection;
+        String url;
+        Properties properties;
+
+        RecordingDriver(Connection connection) {
+            this.connection = connection;
+        }
+
+        public boolean acceptsURL(String url) {
+            return url.startsWith("jdbc:hcs-test:");
+        }
+
+        public Connection connect(String url, Properties properties) throws SQLException {
+            if (!acceptsURL(url)) {
+                return null;
+            }
+            this.url = url;
+            this.properties = properties;
+            if (connection == null) {
+                throw new SQLException("Replication should connect port not in thread_pool.");
+            }
+            return connection;
+        }
+
+        public DriverPropertyInfo[] getPropertyInfo(String url, Properties properties) {
+            return new DriverPropertyInfo[0];
+        }
+
+        public int getMajorVersion() {
+            return 1;
+        }
+
+        public int getMinorVersion() {
+            return 0;
+        }
+
+        public boolean jdbcCompliant() {
+            return false;
+        }
+
+        public Logger getParentLogger() {
+            return Logger.getGlobal();
+        }
+    }
+
+    @Test
+    void restoredTripleUsesExistingTenantConnectionWithoutOpeningReplicationConnection()
+            throws Exception {
+        BaseConnection base = tenantConnection(true);
+        ReplicationProtocol protocol = mock(ReplicationProtocol.class);
+        MultiPrimaryReplicationStream nativeStream = spy(new Session(FIRST).nativeStream);
+        when(base.getReplicationProtocol()).thenReturn(protocol);
+        when(protocol.startLogical(any())).thenReturn(nativeStream);
+        RecordingDriver driver = new RecordingDriver(null);
+        WalReplicationStream wal = connector(base, true);
         DriverManager.registerDriver(driver);
         try {
             wal.initialize(FIRST);
+            assertThat(wal.isUseReplicationApi()).isTrue();
+            verify(base).getReplicationAPI();
+            PreparedStatement statement =
+                    base.prepareStatement(
+                            "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?");
+            verify(statement).setString(1, "test");
+            verify(base, never())
+                    .prepareStatement("SELECT 1 FROM pg_replication_slots WHERE slot_name = ?");
             org.mockito.ArgumentCaptor<LogicalReplicationOptions> options =
                     org.mockito.ArgumentCaptor.forClass(LogicalReplicationOptions.class);
             verify(protocol).startLogical(options.capture());
             assertThat(options.getValue().getStartLSNPosition().asString()).isEqualTo(FIRST);
-            assertThat(captured[0].getProperty("tenantPassword")).isEqualTo("tenant-secret");
-            assertThat(captured[0].getProperty("replication"))
-                    .isNull(); // replication flag is carried in the JDBC URL
+            assertThat(driver.url).isNull();
             wal.close();
-            PGReplicationConnectionImpl ordinaryApi = new PGReplicationConnectionImpl(base);
-            when(base.getReplicationAPI()).thenReturn(ordinaryApi);
-            assertThatThrownBy(() -> wal.initialize(FIRST))
-                    .isInstanceOf(SQLException.class)
-                    .hasMessageContaining("fallback is disabled");
+            wal.close();
+            verify(nativeStream).close();
+            verify(base, never()).close();
         } finally {
             DriverManager.deregisterDriver(driver);
             wal.close();
         }
+    }
+
+    @Test
+    void ordinaryModeStillOpensAndClosesDedicatedReplicationConnection() throws Exception {
+        BaseConnection sql = tenantConnection(true);
+        BaseConnection dedicated = mock(BaseConnection.class);
+        when(dedicated.tacGetQueryExecutor())
+                .thenReturn(mock(com.huawei.gaussdb.jdbc.core.QueryExecutor.class));
+        PGReplicationConnectionImpl ordinaryApi = new PGReplicationConnectionImpl(dedicated);
+        when(dedicated.getReplicationAPI()).thenReturn(ordinaryApi);
+        ReplicationProtocol protocol = mock(ReplicationProtocol.class);
+        when(dedicated.getReplicationProtocol()).thenReturn(protocol);
+        MultiPrimaryReplicationStream nativeStream = mock(MultiPrimaryReplicationStream.class);
+        when(protocol.startLogical(any())).thenReturn(nativeStream);
+        RecordingDriver driver = new RecordingDriver(dedicated);
+        WalReplicationStream wal = connector(sql, false);
+        DriverManager.registerDriver(driver);
+        try {
+            wal.initialize("0/0");
+            assertThat(wal.isUseReplicationApi()).isTrue();
+            assertThat(driver.url).contains("replication=database");
+            assertThat(driver.properties.getProperty("user")).isEqualTo("user");
+            assertThat(driver.properties.getProperty("password")).isEqualTo("db-secret");
+            verify(sql, never()).getReplicationAPI();
+            wal.close();
+            wal.close();
+            verify(nativeStream).close();
+            verify(dedicated).close();
+            verify(sql, never()).close();
+        } finally {
+            DriverManager.deregisterDriver(driver);
+            wal.close();
+        }
+    }
+
+    @Test
+    void tenantStreamStartFailureDoesNotCloseBorrowedConnectionOrFallBackToSql() throws Exception {
+        BaseConnection base = tenantConnection(true);
+        ReplicationProtocol protocol = mock(ReplicationProtocol.class);
+        when(base.getReplicationProtocol()).thenReturn(protocol);
+        when(protocol.startLogical(any())).thenThrow(new SQLException("stream start failed"));
+        WalReplicationStream wal = connector(base, true);
+        assertThatThrownBy(() -> wal.initialize(FIRST))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("fallback is disabled")
+                .hasRootCauseMessage("stream start failed");
+        assertThat(wal.isRunning()).isFalse();
+        wal.close();
+        verify(base, never()).close();
+    }
+
+    @Test
+    void tenantRejectsOrdinaryBuilderWithoutClosingBorrowedConnection() throws Exception {
+        BaseConnection base = tenantConnection(true);
+        PGReplicationConnectionImpl ordinaryApi = new PGReplicationConnectionImpl(base);
+        when(base.getReplicationAPI()).thenReturn(ordinaryApi);
+        WalReplicationStream wal = connector(base, true);
+        assertThatThrownBy(() -> wal.initialize(FIRST))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("fallback is disabled")
+                .hasRootCauseMessage(
+                        "HCS multi-primary requested but driver returned an ordinary logical builder; verify CMS/tenant configuration and the 507 driver");
+        assertThat(wal.isRunning()).isFalse();
+        verify(base, never()).close();
+    }
+
+    @Test
+    void missingTenantSlotFailsBeforeStartingReplication() throws Exception {
+        BaseConnection base = tenantConnection(false);
+        WalReplicationStream wal = connector(base, true);
+        assertThatThrownBy(() -> wal.initialize(FIRST))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("requires a pre-created logical slot");
+        verify(base, never()).getReplicationAPI();
+        verify(base, never()).close();
     }
 
     @Test

@@ -710,7 +710,8 @@ class WalReplicationStreamAdditionalTest {
         ResultSet checkRs = mock(ResultSet.class);
         when(checkStmt.executeQuery()).thenReturn(checkRs);
         when(checkRs.next()).thenReturn(true);
-        when(connection.prepareStatement("SELECT 1 FROM pg_replication_slots WHERE slot_name = ?"))
+        when(connection.prepareStatement(
+                        "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?"))
                 .thenReturn(checkStmt);
 
         PreparedStatement lsnStmt = mock(PreparedStatement.class);

@@ -294,24 +294,27 @@ public class WalReplicationStream {
     /**
      * Try to initialize using GaussDB JDBC replication API.
      *
-     * <p>Creates a dedicated replication connection (with replication=database parameter) and
-     * starts a logical replication stream. Falls back to SQL function polling if the replication
-     * connection cannot be established (e.g., HA port not available in thread_pool mode).
+     * <p>HCS uses the existing tenant connection so the driver can route replication traffic. Other
+     * modes create a dedicated connection with replication=database. SQL polling fallback is only
+     * permitted for ordinary logical decoding.
      */
     private void initializeReplicationApi() throws Exception {
-        // Build replication connection URL
-        // GaussDB requires a separate connection with replication=database for streaming
-        String replUrl = buildReplicationUrl(jdbcUrl);
-        LOG.info("Attempting to create replication connection: {}", replUrl);
-
-        // Create dedicated replication connection
-        Properties auth = new Properties();
-        if (connectionProperties != null) {
-            auth.putAll(connectionProperties);
+        if (hcsMultiPrimary) {
+            // CMS may forward regular connections to a thread_pool port. TenantConnection's
+            // replication API selects the correct endpoint internally; do not reconnect to CMS
+            // with replication=database. The source task retains ownership of this connection.
+            replicationConnection = connection;
+        } else {
+            String replUrl = buildReplicationUrl(jdbcUrl);
+            LOG.info("Attempting to create replication connection: {}", replUrl);
+            Properties auth = new Properties();
+            if (connectionProperties != null) {
+                auth.putAll(connectionProperties);
+            }
+            auth.setProperty("user", username);
+            auth.setProperty("password", password);
+            replicationConnection = DriverManager.getConnection(replUrl, auth);
         }
-        auth.setProperty("user", username);
-        auth.setProperty("password", password);
-        replicationConnection = DriverManager.getConnection(replUrl, auth);
 
         // GaussDB JDBC driver provides com.huawei.gaussdb.jdbc.PGConnection
         // which includes getReplicationAPI() for streaming replication
@@ -1233,7 +1236,7 @@ public class WalReplicationStream {
 
     /** Check if the replication slot exists. */
     private boolean slotExists() throws SQLException {
-        String sql = "SELECT 1 FROM pg_replication_slots WHERE slot_name = ?";
+        String sql = "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, slotName);
             try (ResultSet rs = stmt.executeQuery()) {
@@ -1368,15 +1371,18 @@ public class WalReplicationStream {
                 closeMethod.invoke(replicationStream);
             } catch (Exception e) {
                 LOG.debug("Failed to close replication stream", e);
+            } finally {
+                replicationStream = null;
             }
         }
-        if (replicationConnection != null) {
+        if (replicationConnection != null && replicationConnection != connection) {
             try {
                 replicationConnection.close();
             } catch (Exception e) {
                 LOG.debug("Failed to close replication connection", e);
             }
         }
+        replicationConnection = null;
         LOG.info("WAL replication stream closed");
     }
 
