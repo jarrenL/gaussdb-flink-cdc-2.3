@@ -29,7 +29,11 @@ import static org.mockito.Mockito.when;
 
 import com.huawei.gaussdb.jdbc.copy.CopyDual;
 import com.huawei.gaussdb.jdbc.core.BaseConnection;
+import com.huawei.gaussdb.jdbc.core.QueryExecutor;
 import com.huawei.gaussdb.jdbc.core.ReplicationProtocol;
+import com.huawei.gaussdb.jdbc.core.tenant.TenantConnection;
+import com.huawei.gaussdb.jdbc.core.v3.replication.MultiPrimaryReplicationProtocol;
+import com.huawei.gaussdb.jdbc.core.v3.replication.V3ReplicationProtocol;
 import com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream;
 import com.huawei.gaussdb.jdbc.replication.PGReplicationConnectionImpl;
 import com.huawei.gaussdb.jdbc.replication.ReplicationType;
@@ -58,6 +62,40 @@ import org.junit.jupiter.api.Test;
 
 class HcsMultiPrimaryProtocolTest {
     private static final String FIRST = "0/64,0/2,0/1000";
+
+    @Test
+    void real507TenantProtocolInheritsStartLogicalAndSendsStartReplication() throws Exception {
+        QueryExecutor executor = mock(QueryExecutor.class);
+        TenantConnection tenant = mock(TenantConnection.class);
+        when(tenant.initReplicationProtocol(executor)).thenCallRealMethod();
+        ReplicationProtocol protocol = tenant.initReplicationProtocol(executor);
+        assertThat(protocol).isInstanceOf(MultiPrimaryReplicationProtocol.class);
+        assertThat(
+                        protocol.getClass()
+                                .getMethod("startLogical", LogicalReplicationOptions.class)
+                                .getDeclaringClass())
+                .isEqualTo(V3ReplicationProtocol.class);
+
+        BaseConnection base = tenantConnection(true);
+        when(base.getReplicationProtocol()).thenReturn(protocol);
+        CopyDual copy = mock(CopyDual.class);
+        when(executor.startCopy(any(String.class), org.mockito.ArgumentMatchers.eq(true)))
+                .thenReturn(copy);
+        com.huawei.gaussdb.jdbc.replication.PGReplicationStream stream =
+                base.getReplicationAPI()
+                        .replicationStream()
+                        .logical()
+                        .withSlotName("test")
+                        .withStartPosition(ReplicationPosition.requireMultiPrimary(FIRST))
+                        .withStatusInterval(0, java.util.concurrent.TimeUnit.SECONDS)
+                        .start();
+        try {
+            verify(executor).startCopy("START_REPLICATION SLOT test LOGICAL " + FIRST, true);
+            assertThat(stream).isInstanceOf(MultiPrimaryReplicationStream.class);
+        } finally {
+            stream.close();
+        }
+    }
 
     private static void set(Object target, String name, Object value) throws Exception {
         Field f = target.getClass().getDeclaredField(name);

@@ -72,8 +72,10 @@ CREATE TABLE hcs_changes (event STRING) WITH (
 `hcs.cms-endpoints` 可填一个或多个入口，每项显式写端口，逗号分隔；支持域名、IPv4、
 `[IPv6]:port` 和不同端口。这里填写 CMS 入口，不填写普通 CN 的 HA 复制端口。
 节点选择及租户节点发现由原厂驱动完成。不需要为每个 CMS 建一个 Flink Source。
-连接器通过 `pg_get_replication_slots()` 检查槽，并直接使用已有 `TenantConnection` 的
-`getReplicationAPI()` 启动复制流，避免另带 `replication=database` 重连 CMS 的 thread_pool 端口。
+连接器通过 `pg_get_replication_slots()` 检查槽，目前直接使用已有 `TenantConnection` 的
+`getReplicationAPI()` 尝试启动复制流。内网反馈此方式绕过新连接的 thread_pool 拒绝后，
+仍在 `START_REPLICATION` 阶段报 9049；复制会话的正确入口和握手尚待确认。
+参见[驱动证据、诊断入口及内网追问](docs/HCS_START_REPLICATION_9049.md)。
 CMS 端口按实际部署填写，例如内网部署使用的 `13003`；示例端口不是固定要求。
 
 `schema-name` 和 `table-name` 按 Java 正则整串匹配。多表 JSON 输出中包含 `source.schema/table`。

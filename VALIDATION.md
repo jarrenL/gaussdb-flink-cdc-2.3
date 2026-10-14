@@ -1,5 +1,14 @@
 # 验证记录
 
+最新启动问题：内网反馈 `START_REPLICATION` 错误 9049，尚未成功采集。
+新增的真实 507 协议继承/命令构造回归和诊断入口见
+[`HCS_START_REPLICATION_9049.md`](docs/HCS_START_REPLICATION_9049.md)。
+下表是此前连接复用修改的四版本回归，不能据此认定服务器复制会话已建立。
+
+本次 9049 排查提交：默认 Flink 1.16.3 的 `mvn verify` 共 112 项测试通过（失败/错误/跳过均为 0），
+最终 all.jar 的 `HcsConnectionDiagnostics --driver-only` 执行成功，确认多写协议继承 V3 的 startLogical。
+诊断工具的数据库连接模式仍待内网运行；本次没有重跑其余三个引擎版本，也没有完成真机复制验证。
+
 日期：2026-10-14。JDK 11，Maven，507 CloudNative JDBC。
 
 本仓库使用官方 `com.ververica:flink-connector-debezium:2.3.0`；没有修改 CDC 2.3 框架源码。

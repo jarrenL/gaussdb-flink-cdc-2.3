@@ -300,10 +300,20 @@ public class WalReplicationStream {
      */
     private void initializeReplicationApi() throws Exception {
         if (hcsMultiPrimary) {
-            // CMS may forward regular connections to a thread_pool port. TenantConnection's
-            // replication API selects the correct endpoint internally; do not reconnect to CMS
-            // with replication=database. The source task retains ownership of this connection.
+            // Reuse the tenant connection without issuing another CMS connection attempt.
+            // This selects the tenant API, but does not itself establish a replication-mode
+            // backend session. That server-side connection path still needs HCS validation.
+            // The source task retains ownership of this connection.
             replicationConnection = connection;
+            if (connection instanceof com.huawei.gaussdb.jdbc.core.BaseConnection) {
+                Object protocol =
+                        ((com.huawei.gaussdb.jdbc.core.BaseConnection) connection)
+                                .getReplicationProtocol();
+                LOG.info(
+                        "HCS native replication connection class={}, protocol class={}",
+                        connection.getClass().getName(),
+                        protocol == null ? "null" : protocol.getClass().getName());
+            }
         } else {
             String replUrl = buildReplicationUrl(jdbcUrl);
             LOG.info("Attempting to create replication connection: {}", replUrl);
