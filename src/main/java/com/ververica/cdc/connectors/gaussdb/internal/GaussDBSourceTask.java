@@ -57,7 +57,7 @@ public class GaussDBSourceTask extends SourceTask {
         try {
             connection = connect(config);
             stream = createStream(config, connection);
-            stream.setHcsMultiPrimary(true, config.authentication());
+            stream.setHcsMultiPrimary(true, config.replicationAuthentication());
             stream.initialize(lastRead);
             running = true;
             initialProgress = true;
@@ -68,7 +68,7 @@ public class GaussDBSourceTask extends SourceTask {
     }
 
     protected Connection connect(GaussDBConfig settings) throws Exception {
-        Class.forName("com.huawei.gaussdb.jdbc.Driver");
+        Class.forName("com.huawei.opengauss.jdbc.Driver");
         return DriverManager.getConnection(settings.jdbcUrl(), settings.authentication());
     }
 

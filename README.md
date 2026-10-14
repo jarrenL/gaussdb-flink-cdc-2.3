@@ -72,9 +72,13 @@ CREATE TABLE hcs_changes (event STRING) WITH (
 `hcs.cms-endpoints` 可填一个或多个入口，每项显式写端口，逗号分隔；支持域名、IPv4、
 `[IPv6]:port` 和不同端口。这里填写 CMS 入口，不填写普通 CN 的 HA 复制端口。
 节点选择及租户节点发现由原厂驱动完成。不需要为每个 CMS 建一个 Flink Source。
-连接器通过 `pg_get_replication_slots()` 检查槽，目前直接使用已有 `TenantConnection` 的
-`getReplicationAPI()` 尝试启动复制流。内网反馈此方式绕过新连接的 thread_pool 拒绝后，
-仍在 `START_REPLICATION` 阶段报 9049；复制会话的正确入口和握手尚待确认。
+连接器通过 `pg_get_replication_slots()` 在普通租户 SQL 连接上检查槽，再使用
+`com.huawei.opengauss.jdbc.Driver` / `jdbc:opengauss://` 建立独立复制连接。
+复制连接配置 `allowConnThreadPool=false`、`replication=database`、
+`preferQueryMode=simple` 和 `assumeMinServerVersion=9.4`，由其 `getReplicationAPI()`
+启动多写逻辑流。内网单独验证这一路径时，错误从 9049 变为 HBA 复制连接拒绝，
+表明已到达复制认证阶段；后续 HBA 调整引发实例重启，目标 PDB 尚未恢复，
+因此此版本仍未完成真实复制流启动及增量验收。
 参见[驱动证据、诊断入口及内网追问](docs/HCS_START_REPLICATION_9049.md)。
 CMS 端口按实际部署填写，例如内网部署使用的 `13003`；示例端口不是固定要求。
 

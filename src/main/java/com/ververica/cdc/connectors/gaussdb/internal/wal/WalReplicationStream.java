@@ -294,24 +294,28 @@ public class WalReplicationStream {
     /**
      * Try to initialize using GaussDB JDBC replication API.
      *
-     * <p>HCS uses the existing tenant connection so the driver can route replication traffic. Other
-     * modes create a dedicated connection with replication=database. SQL polling fallback is only
-     * permitted for ordinary logical decoding.
+     * <p>HCS opens a dedicated opengauss replication session through CMS with thread-pool routing
+     * disabled. The existing tenant connection remains the SQL session for slot checks. SQL polling
+     * fallback is only permitted for ordinary logical decoding.
      */
     private void initializeReplicationApi() throws Exception {
         if (hcsMultiPrimary) {
-            // Reuse the tenant connection without issuing another CMS connection attempt.
-            // This selects the tenant API, but does not itself establish a replication-mode
-            // backend session. That server-side connection path still needs HCS validation.
-            // The source task retains ownership of this connection.
-            replicationConnection = connection;
-            if (connection instanceof com.huawei.gaussdb.jdbc.core.BaseConnection) {
+            Properties auth = new Properties();
+            if (connectionProperties != null) auth.putAll(connectionProperties);
+            auth.setProperty("user", username);
+            auth.setProperty("password", password);
+            auth.setProperty("allowConnThreadPool", "false");
+            com.huawei.opengauss.jdbc.PGProperty.REPLICATION.set(auth, "database");
+            com.huawei.opengauss.jdbc.PGProperty.PREFER_QUERY_MODE.set(auth, "simple");
+            com.huawei.opengauss.jdbc.PGProperty.ASSUME_MIN_SERVER_VERSION.set(auth, "9.4");
+            replicationConnection = DriverManager.getConnection(jdbcUrl, auth);
+            if (replicationConnection instanceof com.huawei.opengauss.jdbc.core.BaseConnection) {
                 Object protocol =
-                        ((com.huawei.gaussdb.jdbc.core.BaseConnection) connection)
+                        ((com.huawei.opengauss.jdbc.core.BaseConnection) replicationConnection)
                                 .getReplicationProtocol();
                 LOG.info(
                         "HCS native replication connection class={}, protocol class={}",
-                        connection.getClass().getName(),
+                        replicationConnection.getClass().getName(),
                         protocol == null ? "null" : protocol.getClass().getName());
             }
         } else {
@@ -326,11 +330,11 @@ public class WalReplicationStream {
             replicationConnection = DriverManager.getConnection(replUrl, auth);
         }
 
-        // GaussDB JDBC driver provides com.huawei.gaussdb.jdbc.PGConnection
-        // which includes getReplicationAPI() for streaming replication
+        String driverPackage =
+                hcsMultiPrimary ? "com.huawei.opengauss.jdbc" : "com.huawei.gaussdb.jdbc";
         Class<?> pgConnectionClass =
                 Class.forName(
-                        "com.huawei.gaussdb.jdbc.PGConnection",
+                        driverPackage + ".PGConnection",
                         false,
                         replicationConnection.getClass().getClassLoader());
 
@@ -359,17 +363,19 @@ public class WalReplicationStream {
         Object slotBuilder = withSlotNameMethod.invoke(logicalBuilder, slotName);
 
         if (hcsMultiPrimary
-                && !(logicalBuilder
-                        instanceof
-                        com.huawei.gaussdb.jdbc.replication.fluent.logical
-                                .MultiPrimaryLogicalStreamBuilder)) {
+                && !Class.forName(
+                                driverPackage
+                                        + ".replication.fluent.logical.MultiPrimaryLogicalStreamBuilder",
+                                false,
+                                replicationConnection.getClass().getClassLoader())
+                        .isInstance(logicalBuilder)) {
             throw new SQLException(
                     "HCS multi-primary requested but driver returned an ordinary logical builder; verify CMS/tenant configuration and the 507 driver");
         }
         if ((cnDecode || hcsMultiPrimary) && lastLsn != null && !"0/0".equals(lastLsn)) {
             Class<?> positionClass =
                     Class.forName(
-                            "com.huawei.gaussdb.jdbc.replication.LogSequenceNumber",
+                            driverPackage + ".replication.LogSequenceNumber",
                             false,
                             replicationConnection.getClass().getClassLoader());
             Object position =
@@ -393,9 +399,11 @@ public class WalReplicationStream {
         Method startMethod = slotBuilder.getClass().getMethod("start");
         replicationStream = startMethod.invoke(slotBuilder);
         if (hcsMultiPrimary
-                && !(replicationStream
-                        instanceof
-                        com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream)) {
+                && !Class.forName(
+                                driverPackage + ".replication.MultiPrimaryReplicationStream",
+                                false,
+                                replicationConnection.getClass().getClassLoader())
+                        .isInstance(replicationStream)) {
             throw new SQLException(
                     "HCS multi-primary requested but driver returned an ordinary replication stream");
         }
@@ -690,7 +698,10 @@ public class WalReplicationStream {
         try {
             Class<?> lsnClass =
                     Class.forName(
-                            "com.huawei.gaussdb.jdbc.replication.LogSequenceNumber",
+                            (hcsMultiPrimary
+                                            ? "com.huawei.opengauss.jdbc"
+                                            : "com.huawei.gaussdb.jdbc")
+                                    + ".replication.LogSequenceNumber",
                             false,
                             replicationStream.getClass().getClassLoader());
             Method valueOfMethod = lsnClass.getMethod("valueOf", String.class);

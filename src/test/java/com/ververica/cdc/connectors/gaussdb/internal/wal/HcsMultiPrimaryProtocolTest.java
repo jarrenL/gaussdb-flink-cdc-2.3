@@ -23,7 +23,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,7 +35,6 @@ import com.huawei.gaussdb.jdbc.core.v3.replication.MultiPrimaryReplicationProtoc
 import com.huawei.gaussdb.jdbc.core.v3.replication.V3ReplicationProtocol;
 import com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream;
 import com.huawei.gaussdb.jdbc.replication.PGReplicationConnectionImpl;
-import com.huawei.gaussdb.jdbc.replication.ReplicationType;
 import com.huawei.gaussdb.jdbc.replication.TenantReplicationConnectionImpl;
 import com.huawei.gaussdb.jdbc.replication.fluent.logical.LogicalReplicationOptions;
 import java.lang.reflect.Field;
@@ -68,7 +66,7 @@ class HcsMultiPrimaryProtocolTest {
     void tenantStartupOnlyIncludesReplicationWhenExplicitlyRequestedWithCompatibleAssumption()
             throws Exception {
         java.lang.reflect.Method parameters =
-                com.huawei.gaussdb.jdbc.core.v3.ConnectionFactoryImpl.class.getDeclaredMethod(
+                com.huawei.opengauss.jdbc.core.v3.ConnectionFactoryImpl.class.getDeclaredMethod(
                         "getParametersForStartup", String.class, String.class, Properties.class);
         parameters.setAccessible(true);
         for (String assumedVersion : new String[] {null, "9.2.4", "9.4"}) {
@@ -83,7 +81,7 @@ class HcsMultiPrimaryProtocolTest {
                 List<String[]> startup =
                         (List<String[]>)
                                 parameters.invoke(
-                                        new com.huawei.gaussdb.jdbc.core.tenant
+                                        new com.huawei.opengauss.jdbc.core.tenant
                                                 .TenantConnectionFactoryImpl(),
                                         "probe_user",
                                         "probe_database",
@@ -150,14 +148,14 @@ class HcsMultiPrimaryProtocolTest {
     private static class Session {
         final Deque<byte[]> packets = new ArrayDeque<>();
         final List<byte[]> replies = new ArrayList<>();
-        final MultiPrimaryReplicationStream nativeStream;
+        final com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream nativeStream;
 
         Session(String start) {
-            CopyDual transport =
-                    (CopyDual)
+            com.huawei.opengauss.jdbc.copy.CopyDual transport =
+                    (com.huawei.opengauss.jdbc.copy.CopyDual)
                             Proxy.newProxyInstance(
-                                    CopyDual.class.getClassLoader(),
-                                    new Class[] {CopyDual.class},
+                                    com.huawei.opengauss.jdbc.copy.CopyDual.class.getClassLoader(),
+                                    new Class[] {com.huawei.opengauss.jdbc.copy.CopyDual.class},
                                     (p, m, a) -> {
                                         switch (m.getName()) {
                                             case "isActive":
@@ -184,11 +182,11 @@ class HcsMultiPrimaryProtocolTest {
                                         }
                                     });
             nativeStream =
-                    new MultiPrimaryReplicationStream(
+                    new com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream(
                             transport,
-                            ReplicationPosition.requireMultiPrimary(start),
+                            com.huawei.opengauss.jdbc.replication.LogSequenceNumber.valueOf(start),
                             1000000,
-                            ReplicationType.LOGICAL);
+                            com.huawei.opengauss.jdbc.replication.ReplicationType.LOGICAL);
         }
 
         void packet(String position, String payload) {
@@ -248,6 +246,18 @@ class HcsMultiPrimaryProtocolTest {
                 .thenReturn(statement);
         when(statement.executeQuery()).thenReturn(result);
         when(result.next()).thenReturn(slotExists);
+        return base;
+    }
+
+    private static com.huawei.opengauss.jdbc.core.BaseConnection opengaussReplicationConnection()
+            throws Exception {
+        com.huawei.opengauss.jdbc.core.BaseConnection base =
+                mock(com.huawei.opengauss.jdbc.core.BaseConnection.class);
+        when(base.tacGetQueryExecutor())
+                .thenReturn(mock(com.huawei.opengauss.jdbc.core.QueryExecutor.class));
+        com.huawei.opengauss.jdbc.replication.TenantReplicationConnectionImpl api =
+                new com.huawei.opengauss.jdbc.replication.TenantReplicationConnectionImpl(base);
+        when(base.getReplicationAPI()).thenReturn(api);
         return base;
     }
 
@@ -319,35 +329,49 @@ class HcsMultiPrimaryProtocolTest {
     }
 
     @Test
-    void restoredTripleUsesExistingTenantConnectionWithoutOpeningReplicationConnection()
-            throws Exception {
-        BaseConnection base = tenantConnection(true);
-        ReplicationProtocol protocol = mock(ReplicationProtocol.class);
-        MultiPrimaryReplicationStream nativeStream = spy(new Session(FIRST).nativeStream);
-        when(base.getReplicationProtocol()).thenReturn(protocol);
+    void restoredTripleUsesDedicatedOpengaussReplicationConnection() throws Exception {
+        BaseConnection sql = tenantConnection(true);
+        com.huawei.opengauss.jdbc.core.BaseConnection dedicated = opengaussReplicationConnection();
+        com.huawei.opengauss.jdbc.core.ReplicationProtocol protocol =
+                mock(com.huawei.opengauss.jdbc.core.ReplicationProtocol.class);
+        com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream nativeStream =
+                mock(com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream.class);
+        when(dedicated.getReplicationProtocol()).thenReturn(protocol);
         when(protocol.startLogical(any())).thenReturn(nativeStream);
-        RecordingDriver driver = new RecordingDriver(null);
-        WalReplicationStream wal = connector(base, true);
+        RecordingDriver driver = new RecordingDriver(dedicated);
+        WalReplicationStream wal = connector(sql, true);
         DriverManager.registerDriver(driver);
         try {
             wal.initialize(FIRST);
             assertThat(wal.isUseReplicationApi()).isTrue();
-            verify(base).getReplicationAPI();
+            verify(dedicated).getReplicationAPI();
             PreparedStatement statement =
-                    base.prepareStatement(
+                    sql.prepareStatement(
                             "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?");
             verify(statement).setString(1, "test");
-            verify(base, never())
+            verify(sql, never())
                     .prepareStatement("SELECT 1 FROM pg_replication_slots WHERE slot_name = ?");
-            org.mockito.ArgumentCaptor<LogicalReplicationOptions> options =
-                    org.mockito.ArgumentCaptor.forClass(LogicalReplicationOptions.class);
+            org.mockito.ArgumentCaptor<
+                            com.huawei.opengauss.jdbc.replication.fluent.logical
+                                    .LogicalReplicationOptions>
+                    options =
+                            org.mockito.ArgumentCaptor.forClass(
+                                    com.huawei.opengauss.jdbc.replication.fluent.logical
+                                            .LogicalReplicationOptions.class);
             verify(protocol).startLogical(options.capture());
             assertThat(options.getValue().getStartLSNPosition().asString()).isEqualTo(FIRST);
-            assertThat(driver.url).isNull();
+            assertThat(driver.url).isEqualTo("jdbc:hcs-test:test");
+            assertThat(driver.properties.getProperty("replication")).isEqualTo("database");
+            assertThat(driver.properties.getProperty("preferQueryMode")).isEqualTo("simple");
+            assertThat(driver.properties.getProperty("assumeMinServerVersion")).isEqualTo("9.4");
+            assertThat(driver.properties.getProperty("allowConnThreadPool")).isEqualTo("false");
+            assertThat(driver.properties.getProperty("tenantName")).isEqualTo("tenant");
+            assertThat(driver.properties.getProperty("tenantPassword")).isEqualTo("tenant-secret");
             wal.close();
             wal.close();
             verify(nativeStream).close();
-            verify(base, never()).close();
+            verify(dedicated).close();
+            verify(sql, never()).close();
         } finally {
             DriverManager.deregisterDriver(driver);
             wal.close();
@@ -388,34 +412,53 @@ class HcsMultiPrimaryProtocolTest {
     }
 
     @Test
-    void tenantStreamStartFailureDoesNotCloseBorrowedConnectionOrFallBackToSql() throws Exception {
-        BaseConnection base = tenantConnection(true);
-        ReplicationProtocol protocol = mock(ReplicationProtocol.class);
-        when(base.getReplicationProtocol()).thenReturn(protocol);
+    void tenantStreamStartFailureClosesDedicatedConnectionWithoutSqlFallback() throws Exception {
+        BaseConnection sql = tenantConnection(true);
+        com.huawei.opengauss.jdbc.core.BaseConnection dedicated = opengaussReplicationConnection();
+        com.huawei.opengauss.jdbc.core.ReplicationProtocol protocol =
+                mock(com.huawei.opengauss.jdbc.core.ReplicationProtocol.class);
+        when(dedicated.getReplicationProtocol()).thenReturn(protocol);
         when(protocol.startLogical(any())).thenThrow(new SQLException("stream start failed"));
-        WalReplicationStream wal = connector(base, true);
-        assertThatThrownBy(() -> wal.initialize(FIRST))
-                .isInstanceOf(SQLException.class)
-                .hasMessageContaining("fallback is disabled")
-                .hasRootCauseMessage("stream start failed");
-        assertThat(wal.isRunning()).isFalse();
-        wal.close();
-        verify(base, never()).close();
+        RecordingDriver driver = new RecordingDriver(dedicated);
+        WalReplicationStream wal = connector(sql, true);
+        DriverManager.registerDriver(driver);
+        try {
+            assertThatThrownBy(() -> wal.initialize(FIRST))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("fallback is disabled")
+                    .hasRootCauseMessage("stream start failed");
+            assertThat(wal.isRunning()).isFalse();
+            verify(dedicated).close();
+            verify(sql, never()).close();
+        } finally {
+            DriverManager.deregisterDriver(driver);
+            wal.close();
+        }
     }
 
     @Test
-    void tenantRejectsOrdinaryBuilderWithoutClosingBorrowedConnection() throws Exception {
-        BaseConnection base = tenantConnection(true);
-        PGReplicationConnectionImpl ordinaryApi = new PGReplicationConnectionImpl(base);
-        when(base.getReplicationAPI()).thenReturn(ordinaryApi);
-        WalReplicationStream wal = connector(base, true);
-        assertThatThrownBy(() -> wal.initialize(FIRST))
-                .isInstanceOf(SQLException.class)
-                .hasMessageContaining("fallback is disabled")
-                .hasRootCauseMessage(
-                        "HCS multi-primary requested but driver returned an ordinary logical builder; verify CMS/tenant configuration and the 507 driver");
-        assertThat(wal.isRunning()).isFalse();
-        verify(base, never()).close();
+    void tenantRejectsOrdinaryBuilderAndClosesDedicatedConnection() throws Exception {
+        BaseConnection sql = tenantConnection(true);
+        com.huawei.opengauss.jdbc.core.BaseConnection dedicated = opengaussReplicationConnection();
+        com.huawei.opengauss.jdbc.replication.PGReplicationConnectionImpl ordinaryApi =
+                new com.huawei.opengauss.jdbc.replication.PGReplicationConnectionImpl(dedicated);
+        when(dedicated.getReplicationAPI()).thenReturn(ordinaryApi);
+        RecordingDriver driver = new RecordingDriver(dedicated);
+        WalReplicationStream wal = connector(sql, true);
+        DriverManager.registerDriver(driver);
+        try {
+            assertThatThrownBy(() -> wal.initialize(FIRST))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("fallback is disabled")
+                    .hasRootCauseMessage(
+                            "HCS multi-primary requested but driver returned an ordinary logical builder; verify CMS/tenant configuration and the 507 driver");
+            assertThat(wal.isRunning()).isFalse();
+            verify(dedicated).close();
+            verify(sql, never()).close();
+        } finally {
+            DriverManager.deregisterDriver(driver);
+            wal.close();
+        }
     }
 
     @Test

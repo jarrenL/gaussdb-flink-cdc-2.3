@@ -1,5 +1,13 @@
 # HCS 第三个启动错误：9049 / START_REPLICATION
 
+> 2026-10-14 后续证据：内网依据开发指南的透明多写逻辑复制示例，
+> 使用 `com.huawei.opengauss.jdbc.Driver`、`jdbc:opengauss://`、
+> `allowConnThreadPool=false`、`replication=database` 和 `preferQueryMode=simple`
+> 建立独立复制连接。错误从 9049 变成 `No gs_hba.conf entry for replication connection`，
+> 说明这一路径到达复制认证。复制账号权限及 HBA 已由内网调整；重启后 PDB 返回
+> `NO_AVAILABLE_TENANTNODE`，尚不能证实 `start()` 或增量读取成功。
+> 代码现已改用这条路径。以下章节记录修改前的诊断过程，不能作为当前实现说明。
+
 日期：2026-10-14。适用分析对象：本项目配套的
 `507.0.0.b071-cloudnative-jdk8` 驱动，原始 JAR SHA-256 为
 `68391de275ff60c4a747d6e0d39df1259439d8fde8bf2c4d2b087790cb6896c2`。

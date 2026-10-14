@@ -87,7 +87,7 @@ public final class GaussDBConfig implements Serializable {
         } catch (java.io.UnsupportedEncodingException e) {
             throw new IllegalStateException(e);
         }
-        return "jdbc:gaussdb://" + required("hcs.cms-endpoints") + "/" + database;
+        return "jdbc:opengauss://" + required("hcs.cms-endpoints") + "/" + database;
     }
 
     public Properties authentication() {
@@ -100,6 +100,17 @@ public final class GaussDBConfig implements Serializable {
         props.setProperty("sslmode", get("sslmode", "require"));
         props.setProperty(
                 "connectTimeout", String.valueOf(positiveInt("connect.timeout.seconds", 15)));
+        return props;
+    }
+
+    /** The 507 CloudNative driver requires a separate, non-thread-pool replication session. */
+    public Properties replicationAuthentication() {
+        Properties props = authentication();
+        props.setProperty("allowConnThreadPool", "false");
+        com.huawei.opengauss.jdbc.PGProperty.REPLICATION.set(props, "database");
+        com.huawei.opengauss.jdbc.PGProperty.PREFER_QUERY_MODE.set(props, "simple");
+        // The driver's startup packet omits replication below an assumed 9.4 protocol version.
+        com.huawei.opengauss.jdbc.PGProperty.ASSUME_MIN_SERVER_VERSION.set(props, "9.4");
         return props;
     }
 

@@ -1,6 +1,22 @@
 # 验证记录
 
-最新启动问题：内网反馈 `START_REPLICATION` 错误 9049，尚未成功采集。
+2026-10-14 更新：内网使用开发指南给出的 `com.huawei.opengauss.jdbc.Driver`、
+`jdbc:opengauss://`、`allowConnThreadPool=false`、`replication=database`、
+`preferQueryMode=simple` 建立独立复制连接后，9049 变为
+`No gs_hba.conf entry for replication connection`。这说明握手已进入复制认证，
+但不证明流已启动。权限和 HBA 配置已由内网调整；目前实例重启后 PDB 不可用，
+`NO_AVAILABLE_TENANTNODE` 阻止了真机复测。
+
+连接器现已采用该独立连接方式。SQL 槽检查仍使用普通租户连接，HCS 复制流使用
+`opengauss` 包中的 MultiPrimary builder、位点和流；失败时关闭独立复制连接，
+且不回退 SQL 解码。自动测试覆盖复制属性、三段位点、ACK、资源关闭和非 HCS 路径。
+使用 JDK 11 对 Flink 1.13.6、1.14.6、1.15.4、1.16.3 执行
+`scripts/verify-matrix.sh`，四个版本均编译、打包和通过 113 项测试，
+失败 / 错误 / 跳过均为 0。最终 all.jar 的 `HcsConnectionDiagnostics --driver-only`
+执行成功；这个入口没有连接数据库，也不能代表复制流验收。
+此前的 9049 / 连接复用描述保留为历史过程。
+
+此前启动问题：内网反馈 `START_REPLICATION` 错误 9049，尚未成功采集。
 新增的真实 507 协议继承/命令构造回归和诊断入口见
 [`HCS_START_REPLICATION_9049.md`](docs/HCS_START_REPLICATION_9049.md)。
 下表是此前连接复用修改的四版本回归，不能据此认定服务器复制会话已建立。
