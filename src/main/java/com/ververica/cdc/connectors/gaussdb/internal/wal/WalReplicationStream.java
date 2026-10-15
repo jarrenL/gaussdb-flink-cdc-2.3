@@ -1269,35 +1269,34 @@ public class WalReplicationStream {
         }
     }
 
-    /** Select the stream order required by this HCS slot, as specified by confirmed_csn. */
+    /** Select the stream order required by this HCS slot, as specified by confirm_csn. */
     private int readHcsOutputOrder() throws SQLException {
-        String sql = "SELECT confirmed_csn FROM pg_get_replication_slots() WHERE slot_name = ?";
+        String sql = "SELECT confirm_csn FROM pg_get_replication_slots() WHERE slot_name = ?";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, slotName);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) {
                     throw new SQLException("HCS replication slot disappeared: " + slotName);
                 }
-                String confirmedCsn = rs.getString(1);
-                if (confirmedCsn == null) {
-                    throw new SQLException(
-                            "HCS replication slot has no confirmed_csn: " + slotName);
+                String confirmCsn = rs.getString(1);
+                if (confirmCsn == null) {
+                    throw new SQLException("HCS replication slot has no confirm_csn: " + slotName);
                 }
                 try {
                     int outputOrder =
-                            new java.math.BigInteger(confirmedCsn.trim()).signum() == 0 ? 0 : 1;
+                            new java.math.BigInteger(confirmCsn.trim()).signum() == 0 ? 0 : 1;
                     LOG.info(
-                            "HCS replication slot {} confirmed_csn={} requires output-order={}",
+                            "HCS replication slot {} confirm_csn={} requires output-order={}",
                             slotName,
-                            confirmedCsn,
+                            confirmCsn,
                             outputOrder);
                     return outputOrder;
                 } catch (NumberFormatException e) {
                     throw new SQLException(
-                            "Invalid confirmed_csn for HCS replication slot "
+                            "Invalid confirm_csn for HCS replication slot "
                                     + slotName
                                     + ": "
-                                    + confirmedCsn,
+                                    + confirmCsn,
                             e);
                 }
             }

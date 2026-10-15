@@ -238,7 +238,7 @@ class HcsMultiPrimaryProtocolTest {
         return tenantConnection(slotExists, "56254941488");
     }
 
-    private static BaseConnection tenantConnection(boolean slotExists, String confirmedCsn)
+    private static BaseConnection tenantConnection(boolean slotExists, String confirmCsn)
             throws Exception {
         BaseConnection base = mock(BaseConnection.class);
         when(base.tacGetQueryExecutor())
@@ -254,11 +254,11 @@ class HcsMultiPrimaryProtocolTest {
         PreparedStatement orderStatement = mock(PreparedStatement.class);
         ResultSet orderResult = mock(ResultSet.class);
         when(base.prepareStatement(
-                        "SELECT confirmed_csn FROM pg_get_replication_slots() WHERE slot_name = ?"))
+                        "SELECT confirm_csn FROM pg_get_replication_slots() WHERE slot_name = ?"))
                 .thenReturn(orderStatement);
         when(orderStatement.executeQuery()).thenReturn(orderResult);
         when(orderResult.next()).thenReturn(slotExists);
-        when(orderResult.getString(1)).thenReturn(confirmedCsn);
+        when(orderResult.getString(1)).thenReturn(confirmCsn);
         return base;
     }
 

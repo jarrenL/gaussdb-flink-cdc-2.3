@@ -54,11 +54,13 @@ SELECT * FROM pg_create_logical_replication_slot('flink_cdc_slot', 'parallel_jso
 随后在目标数据库核对槽及输出顺序：
 
 ```sql
-SELECT slot_name, plugin, slot_type, confirmed_csn
+SELECT slot_name, plugin, slot_type, confirm_csn
 FROM pg_get_replication_slots()
 WHERE slot_name = 'flink_cdc_slot';
 ```
 
-`confirmed_csn = 0` 是 LSN 序槽，需要 `output-order=0`；非零是 CSN 序槽，需要
+透明多写新实例的函数结果列名是 `confirm_csn`，并非非透明多写文档中常见的
+`confirmed_csn`。
+`confirm_csn = 0` 是 LSN 序槽，需要 `output-order=0`；非零是 CSN 序槽，需要
 `output-order=1`。连接器会在启动时查询并设置该选项，无法读取时直接失败。
 槽应由一个采集任务独占。目标实例还须实测流启动、数据输出和断线恢复。

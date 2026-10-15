@@ -4,7 +4,7 @@
 
 > 2026-10-15 更新：此文保留旧问题供溯源。新实例已用 `com.huawei.gaussdb.jdbc.Driver`
 > 和 `jdbc:gaussdb://` 的独立复制连接成功 `start()`、`readPending()`；现行连接器
-> 也已改用这条路径，并根据槽的 `confirmed_csn` 显式设置 `output-order=0/1`。
+> 也已改用这条路径，并根据槽的 `confirm_csn` 显式设置 `output-order=0/1`。
 > 下文的旧代码摘录和未解问题不能代表当前联调状态。
 
 > 此问卷的连接代码摘录固定在旧提交 `a55d37c`，用于保留当时的待确认问题。
@@ -12,7 +12,7 @@
 > `allowConnThreadPool=false`、`replication=database`、`preferQueryMode=simple`、
 > `assumeMinServerVersion=9.4`。后续提供的 Kernel 507.1.0 开发指南已确认：
 > 显式 `decode-style=j` 覆盖插件默认格式，`sending-batch` 默认 0，
-> `output-order` 默认 0 且只能用于 LSN 序槽。当前目标槽的 `confirmed_csn`
+> `output-order` 默认 0 且只能用于 LSN 序槽。当前目标槽的 `confirm_csn`
 > 尚未核对；以下旧代码摘录不能作为现行实现说明。
 
 ## 任务说明（可直接作为给内网 AI 的提示词）
@@ -161,7 +161,7 @@ TaskManager 除 CMS 外必须可达哪些返回地址和端口？TLS 校验与�
 
 507.1 开发指南已给出 `sending-batch=0`、`output-order=0` 的默认值，且说明
 `decode-style=j` 会覆盖 `parallel_binary_decoding` 插件的默认二进制格式。
-请核对目标槽的 `confirmed_csn`、LSN/CSN 序属性及其与 `output-order` 的组合，
+请核对目标槽的 `confirm_csn`、LSN/CSN 序属性及其与 `output-order` 的组合，
 并用实际报文验证 `parallel-decode-num=2`、`decode-style=j`、逐条发送、
 `include-xids=1`、`include-timestamp=1` 的输出和跨节点事务顺序。
 若该槽为 CSN 序，请说明连接器是否必须显式发送 `output-order=1`，
