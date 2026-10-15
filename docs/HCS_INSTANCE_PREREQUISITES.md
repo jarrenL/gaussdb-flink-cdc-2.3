@@ -63,3 +63,10 @@ WHERE slot_name = 'flink_cdc_slot';
 也在未设置该选项时读到了增量。当前连接器只检查槽是否存在，不查询
 `confirm_csn`，也不设置 `output-order`。槽应由一个采集任务独占。
 目标实例还须实测 Flink 流启动、数据输出和断线恢复。
+
+中文数据联调时，也应在目标会话查看 `SHOW server_encoding;`、
+`SHOW client_encoding;`，并对照源表 `SELECT` 与原始 `readPending()` 报文字节。
+当前实测实例的两个编码均为 `SQL_ASCII`，而复制报文中的中文是 UTF-8 字节；
+连接器按 UTF-8 严格解析该报文。若源表内容或原始报文本身已乱码，
+连接器无法从字符串内容反推出原文。Windows GBK 控制台也可能误显示正确的 Java 字符串，
+排查时应比较字节的十六进制值或 Unicode 码点。

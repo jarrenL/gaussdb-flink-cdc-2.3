@@ -96,6 +96,10 @@ Flink 任务中的行为仍需真机验证。
 `output.format=row`（默认）使用官方 `RowDataDebeziumDeserializeSchema`，输出 INSERT、UPDATE_BEFORE、
 UPDATE_AFTER、DELETE。行模式要求 WAL 包含声明字段的完整前后镜像；缺失字段报错，不补造 NULL。
 请与管理员确认 REPLICA IDENTITY FULL 及解码配置；异构表采集优先使用 JSON 模式。
+JSON 模式下，UPDATE/DELETE 的 `before` 只包含 WAL 实际提供的旧列；若插件只返回主键，
+非主键旧值会缺席，不会被填成 NULL。协议明确返回的 NULL 仍保留为 NULL，连接器不会
+另查当前表去猜测历史值。HCS 复制报文会严格按 UTF-8 解码，遇到非法字节直接报错。
+若源表或下游仍出现乱码，请对照原始复制报文字节、运行中的连接器版本和下游输出编码。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |

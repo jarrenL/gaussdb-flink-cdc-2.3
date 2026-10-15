@@ -190,8 +190,11 @@ class HcsMultiPrimaryProtocolTest {
         }
 
         void packet(String position, String payload) {
+            packet(position, payload.getBytes(StandardCharsets.UTF_8));
+        }
+
+        void packet(String position, byte[] bytes) {
             long[] triple = ReplicationPosition.requireMultiPrimary(position).asLongArray();
-            byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
             packets.add(
                     ByteBuffer.allocate(33 + bytes.length)
                             .put((byte) 'w')
@@ -530,5 +533,26 @@ class HcsMultiPrimaryProtocolTest {
         assertThat(changes).extracting(WalChange::getSchema).containsOnly("flink_cdc_schema");
         assertThat(changes).extracting(WalChange::getTable).containsOnly("cdc_probe");
         assertThat(wal.getLastLsn()).isEqualTo("D/5A20A5BD,0/6,0/B3BC");
+    }
+
+    @Test
+    void hcsUtf8PayloadPreservesChineseAndRejectsInvalidBytes() throws Exception {
+        Session session = new Session(ReplicationPosition.MULTI_PRIMARY_START);
+        WalReplicationStream wal = session.connector();
+        session.packet(FIRST, "BEGIN CSN: 100 wal_id: 2 first_lsn: 0/1000");
+        session.packet(
+                "0/64,0/2,0/1010",
+                "{\"table_name\":\"public.t\",\"op_type\":\"INSERT\",\"columns_name\":[\"id\",\"name\"],\"columns_type\":[\"integer\",\"text\"],\"columns_val\":[\"8890\",\"'中文测试_特殊字符!@#$(%^&*()'\"],\"old_keys_name\":[],\"old_keys_type\":[],\"old_keys_val\":[]}");
+        session.packet("0/64,0/2,0/1020", "COMMIT XID: 1");
+        List<WalChange> changes = wal.readChanges(100);
+        assertThat(changes).hasSize(1);
+        assertThat(changes.get(0).getAfterColumns().get(1).getValue())
+                .isEqualTo("中文测试_特殊字符!@#$(%^&*()");
+
+        session.packet("0/65,0/2,0/1030", new byte[] {(byte) 0xc3, (byte) 0x28});
+        assertThatThrownBy(() -> wal.readChanges(100))
+                .isInstanceOf(SQLException.class)
+                .hasCauseInstanceOf(SQLException.class)
+                .hasStackTraceContaining("Logical replication payload is not valid UTF-8");
     }
 }

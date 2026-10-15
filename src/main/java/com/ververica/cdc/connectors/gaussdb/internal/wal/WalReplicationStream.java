@@ -737,7 +737,7 @@ public class WalReplicationStream {
         if (hcsMultiPrimary) {
             ReplicationPosition.requireMultiPrimary(position);
         }
-        String text = new String(data, java.nio.charset.StandardCharsets.UTF_8).trim();
+        String text = decodeUtf8Strict(data).trim();
         if (text.startsWith("BEGIN")) {
             if (cnTransactionOpen) {
                 throw new SQLException(
@@ -788,6 +788,21 @@ public class WalReplicationStream {
             return java.util.Collections.emptyList();
         }
         throw new SQLException("Unsupported CN record type; refusing to advance checkpoint");
+    }
+
+    private static String decodeUtf8Strict(byte[] data) throws SQLException {
+        try {
+            return java.nio.charset.StandardCharsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(data))
+                    .toString();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            throw new SQLException(
+                    "Logical replication payload is not valid UTF-8; check the database and JDBC client encoding",
+                    e);
+        }
     }
 
     private List<WalChange> parseReplicationRecord(byte[] data, String recordLsn) {

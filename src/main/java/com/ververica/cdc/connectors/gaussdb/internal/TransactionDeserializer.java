@@ -95,14 +95,16 @@ public final class TransactionDeserializer<T> implements DebeziumDeserialization
                 if (previous != null && !previous.equals(col.getInt32("oid")))
                     throw new IllegalArgumentException("Column type changed inside WAL event");
             }
-        SchemaBuilder dataBuilder = SchemaBuilder.struct().name("gaussdb.Row").optional();
-        columns.forEach((name, oid) -> dataBuilder.field(name, schema(oid)));
-        Schema data = dataBuilder.build();
+        // A JSON decoder may only provide old primary-key columns for UPDATE/DELETE. Keep each
+        // image's schema limited to columns actually present in that image; using a union schema
+        // would serialize unknown old values as JSON null, which falsely claims they were NULL.
+        Schema beforeData = imageSchema(row.getArray("before"), "gaussdb.BeforeRow");
+        Schema afterData = imageSchema(row.getArray("after"), "gaussdb.AfterRow");
         Schema envelope =
                 SchemaBuilder.struct()
                         .name("gaussdb.Envelope")
-                        .field("before", data)
-                        .field("after", data)
+                        .field("before", beforeData)
+                        .field("after", afterData)
                         .field("source", SOURCE)
                         .field("op", Schema.STRING_SCHEMA)
                         .field("ts_ms", Schema.INT64_SCHEMA)
@@ -135,8 +137,12 @@ public final class TransactionDeserializer<T> implements DebeziumDeserialization
                         .put("position", position);
         Struct value =
                 new Struct(envelope)
-                        .put("before", "c".equals(op) ? null : image(data, row.getArray("before")))
-                        .put("after", "d".equals(op) ? null : image(data, row.getArray("after")))
+                        .put(
+                                "before",
+                                "c".equals(op) ? null : image(beforeData, row.getArray("before")))
+                        .put(
+                                "after",
+                                "d".equals(op) ? null : image(afterData, row.getArray("after")))
                         .put("source", source)
                         .put("op", op)
                         .put("ts_ms", now);
@@ -146,6 +152,14 @@ public final class TransactionDeserializer<T> implements DebeziumDeserialization
                 "gaussdb." + row.getString("schema") + "." + row.getString("table"),
                 envelope,
                 value);
+    }
+
+    private static Schema imageSchema(List<Struct> columns, String name) {
+        SchemaBuilder builder = SchemaBuilder.struct().name(name).optional();
+        for (Struct col : columns) {
+            builder.field(col.getString("name"), schema(col.getInt32("oid")));
+        }
+        return builder.build();
     }
 
     private static Schema schema(int oid) {

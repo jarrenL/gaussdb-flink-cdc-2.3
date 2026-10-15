@@ -170,6 +170,61 @@ class ConfigurationAndRowTest {
     }
 
     @Test
+    void jsonBeforeDistinguishesMissingOldColumnFromOldNull() throws Exception {
+        WalChange missingOldName =
+                WalChange.update(
+                        POS,
+                        1,
+                        "public",
+                        "t",
+                        Collections.singletonList(col("id", 23, "8889")),
+                        Arrays.asList(col("id", 23, "8889"), col("name", 25, null)));
+        WalChange oldNameWasNull =
+                WalChange.update(
+                        POS,
+                        2,
+                        "public",
+                        "t",
+                        Arrays.asList(col("id", 23, "8890"), col("name", 25, null)),
+                        Arrays.asList(col("id", 23, "8890"), col("name", 25, "new")));
+        List<String> rows = new ArrayList<>();
+        new TransactionDeserializer<>(
+                        new JsonDebeziumDeserializationSchema(), Collections.emptyList())
+                .deserialize(
+                        CommittedBatch.create(
+                                TestConfig.config(),
+                                Arrays.asList(missingOldName, oldNameWasNull),
+                                POS),
+                        collector(rows));
+
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0)).contains("\"before\":{\"id\":8889}");
+        assertThat(rows.get(0)).contains("\"after\":{\"id\":8889,\"name\":null}");
+        assertThat(rows.get(1)).contains("\"before\":{\"id\":8890,\"name\":null}");
+    }
+
+    @Test
+    void jsonDeserializerPreservesChineseColumnValue() throws Exception {
+        String value = "中文测试_特殊字符!@#$(%^&*()";
+        WalChange change =
+                WalChange.insert(
+                        POS,
+                        1,
+                        "public",
+                        "t",
+                        Arrays.asList(col("id", 23, "8890"), col("name", 25, value)));
+        List<String> rows = new ArrayList<>();
+        new TransactionDeserializer<>(
+                        new JsonDebeziumDeserializationSchema(), Collections.emptyList())
+                .deserialize(
+                        CommittedBatch.create(
+                                TestConfig.config(), Collections.singletonList(change), POS),
+                        collector(rows));
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0)).contains(value);
+    }
+
+    @Test
     void missingTypedColumnsFailInsteadOfFabricatingNulls() {
         RowType type =
                 (RowType)
