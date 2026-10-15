@@ -82,6 +82,13 @@ CREATE TABLE hcs_changes (event STRING) WITH (
 参见[驱动证据、诊断入口及内网追问](docs/HCS_START_REPLICATION_9049.md)。
 CMS 端口按实际部署填写，例如内网部署使用的 `13003`；示例端口不是固定要求。
 
+507.1 开发指南的逻辑解码选项说明确认：显式 `decode-style=j` 会覆盖槽插件的默认格式，
+因此 `parallel_binary_decoding` 槽名本身不代表本连接一定收到二进制数据；
+`sending-batch` 未设置时默认 `0`（逐条发送）。当前连接器未设置 `output-order`，
+其文档默认值为 `0`，仅适用于 LSN 序槽；若目标槽为 CSN 序槽，需要先核对
+`pg_get_replication_slots()` 的 `confirmed_csn` 和相应启动选项，不能直接复用默认配置。
+上述选项在目标实例上的实际输出仍需真机验证。
+
 `schema-name` 和 `table-name` 按 Java 正则整串匹配。多表 JSON 输出中包含 `source.schema/table`。
 `output.format=json` 使用官方 `JsonDebeziumDeserializationSchema`，输出一列 STRING；
 `output.format=row`（默认）使用官方 `RowDataDebeziumDeserializeSchema`，输出 INSERT、UPDATE_BEFORE、

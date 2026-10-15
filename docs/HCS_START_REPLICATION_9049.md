@@ -197,10 +197,12 @@ START_REPLICATION 被谁处理？目标版本是否需要不同协议？如果�
 
 **R5：现有槽和插件是否适合后续 JSON 流？**
 
-请核对目标槽的完整元信息，以及该形态下 parallel_binary_decoding 配合 decode-style=j 的行为。
-公开的通用[逻辑解码选项说明](https://support.huaweicloud.com/intl/en-us/fg-gaussdb-dist-v8/gaussdb-18-0033.html)
-说明插件名称影响默认格式，显式 decode-style 可指定格式。因此暂不能仅凭插件名判定它一定输出二进制；
-也不能把通用说明直接当作本透明多写版本的保证。请提供适用配置与成功解码的一小段样例。
+后续收到的 Kernel 507.1.0 开发指南“逻辑解码选项”明确说明：
+`parallel_binary_decoding` 默认输出二进制，但显式 `decode-style=j` 时按 JSON 解码；
+未传 `sending-batch` 时默认逐条发送。插件名称与选项的组合并非协议矛盾。
+请核对目标槽的 `confirmed_csn`：未传 `output-order` 时默认 0，仅适用于 LSN 序槽；
+CSN 序槽要求 `output-order=1`。仍需成功启动后提供实际 JSON 报文与三段位点，
+以验证本实例行为和事务边界。
 
 ## 5. 收到答复后的开发分支
 

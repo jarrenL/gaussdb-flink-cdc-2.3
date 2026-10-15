@@ -2,6 +2,14 @@
 
 日期：2026-10-14。版本：第 1 版。
 
+> 此问卷的连接代码摘录固定在旧提交 `a55d37c`，用于保留当时的待确认问题。
+> 当前 `fc59e38` 已改为 `jdbc:opengauss://` 的独立复制连接，并设置
+> `allowConnThreadPool=false`、`replication=database`、`preferQueryMode=simple`、
+> `assumeMinServerVersion=9.4`。后续提供的 Kernel 507.1.0 开发指南已确认：
+> 显式 `decode-style=j` 覆盖插件默认格式，`sending-batch` 默认 0，
+> `output-order` 默认 0 且只能用于 LSN 序槽。当前目标槽的 `confirmed_csn`
+> 尚未核对；以下旧代码摘录不能作为现行实现说明。
+
 ## 任务说明（可直接作为给内网 AI 的提示词）
 
 我们正在开发基于官方 Flink CDC 2.3 采集框架的 GaussDB HCS 透明多写连接器。
@@ -62,7 +70,7 @@
    已有租户连接的 `getReplicationAPI()`，由原厂驱动路由复制流量。此修复已通过客户端回归，
    修复后在目标实例上的启动、持续采集结果尚未反馈。13003 不被假定为所有部署的固定端口。
 
-### 当前实现摘要：以下是代码行为，未必是正确的服务端协议假设
+### 原始实现摘要（a55d37c 基线，非现行代码）
 
 连接和流初始化大致如下（省略反射、校验和异常处理）：
 
@@ -144,12 +152,15 @@ TaskManager 除 CMS 外必须可达哪些返回地址和端口？TLS 校验与�
 同名槽是否可能出现？槽是否跨节点共享、切换后保留、允许多订阅者？
 如何查询 active、消费确认进度、最早可恢复位置和 WAL 保留情况？禁止消费/推进槽的诊断查询有哪些？
 
-**Q06【P0】解码选项应如何设置，默认值是什么？**
+**Q06【P0】目标槽的输出顺序与实际解码行为是什么？**
 
-请逐项说明 `parallel-decode-num`、`decode-style`、`sending-batch`、`output-order`、
-`include-xids`、`include-timestamp` 在目标透明多写形态上的支持情况、值域、默认值和组合限制。
-尤其确认“不传 sending-batch”是否保证非批量，以及“不传 output-order”是否保证完整事务有序输出。
-如果当前 `2 / j / 未传 sending-batch / 未传 output-order` 不适合，请给出明确的替代组合和原因。
+507.1 开发指南已给出 `sending-batch=0`、`output-order=0` 的默认值，且说明
+`decode-style=j` 会覆盖 `parallel_binary_decoding` 插件的默认二进制格式。
+请核对目标槽的 `confirmed_csn`、LSN/CSN 序属性及其与 `output-order` 的组合，
+并用实际报文验证 `parallel-decode-num=2`、`decode-style=j`、逐条发送、
+`include-xids=1`、`include-timestamp=1` 的输出和跨节点事务顺序。
+若该槽为 CSN 序，请说明连接器是否必须显式发送 `output-order=1`，
+以及这对三段位点比较、checkpoint 恢复和 ACK 的影响。
 
 **Q07【P0】readPending() 返回的数据到底如何分帧？**
 
