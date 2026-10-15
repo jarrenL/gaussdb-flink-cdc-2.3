@@ -80,18 +80,16 @@ CREATE TABLE hcs_changes (event STRING) WITH (
 启动多写逻辑流。新实例已单独实测这套 GaussDB JDBC 连接参数：返回
 `TenantConnection`，`start()` 返回 `MultiPrimaryReplicationStream`，`readPending()`
 读到了 BEGIN、JSON INSERT/UPDATE/DELETE、COMMIT 和三段位点。
-该测试尚未运行本 Flink 连接器；槽序选项、checkpoint ACK 和故障恢复仍待真机联调。
+该测试尚未运行本 Flink 连接器；checkpoint ACK 和故障恢复仍待真机联调。
 参见[驱动证据、诊断入口及内网追问](docs/HCS_START_REPLICATION_9049.md)。
 CMS 端口按实际部署填写，例如内网部署使用的 `13003`；示例端口不是固定要求。
 
 507.1 开发指南的逻辑解码选项说明确认：显式 `decode-style=j` 会覆盖槽插件的默认格式，
 因此 `parallel_binary_decoding` 槽名本身不代表本连接一定收到二进制数据；
-`sending-batch` 未设置时默认 `0`（逐条发送）。连接器通过
-`pg_get_replication_slots()` 读取目标槽的 `confirm_csn`，对 LSN 序槽发送
-`output-order=0`，对 CSN 序槽发送 `output-order=1`；若无法读取该字段则启动失败。
-新实例的透明多写函数实测列名是 `confirm_csn`；部分非透明多写文档使用
-`confirmed_csn`，两者不能混用于本实例的 SQL。
-上述选项在目标实例上的实际输出仍需真机验证。
+`sending-batch` 未设置时默认 `0`（逐条发送）。透明多写章节及官方 JDBC 示例
+均未要求设置 `output-order`；新实例也已在未设置它时成功读取增量。因此 HCS
+连接器不查询 `confirm_csn`，也不发送 `output-order`。上述解码选项在完整
+Flink 任务中的行为仍需真机验证。
 
 `schema-name` 和 `table-name` 按 Java 正则整串匹配。多表 JSON 输出中包含 `source.schema/table`。
 `output.format=json` 使用官方 `JsonDebeziumDeserializationSchema`，输出一列 STRING；

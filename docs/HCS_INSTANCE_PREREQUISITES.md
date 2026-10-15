@@ -51,16 +51,15 @@ gs_tenant -t reload_tenant_guc_config --tenant-name=test01
 SELECT * FROM pg_create_logical_replication_slot('flink_cdc_slot', 'parallel_json_decoding');
 ```
 
-随后在目标数据库核对槽及输出顺序：
+随后在目标数据库核对槽：
 
 ```sql
-SELECT slot_name, plugin, slot_type, confirm_csn
+SELECT slot_name, plugin, slot_type
 FROM pg_get_replication_slots()
 WHERE slot_name = 'flink_cdc_slot';
 ```
 
-透明多写新实例的函数结果列名是 `confirm_csn`，并非非透明多写文档中常见的
-`confirmed_csn`。
-`confirm_csn = 0` 是 LSN 序槽，需要 `output-order=0`；非零是 CSN 序槽，需要
-`output-order=1`。连接器会在启动时查询并设置该选项，无法读取时直接失败。
-槽应由一个采集任务独占。目标实例还须实测流启动、数据输出和断线恢复。
+透明多写章节及官方 JDBC 示例没有要求 `output-order`；新实例的独立 JDBC 测试
+也在未设置该选项时读到了增量。当前连接器只检查槽是否存在，不查询
+`confirm_csn`，也不设置 `output-order`。槽应由一个采集任务独占。
+目标实例还须实测 Flink 流启动、数据输出和断线恢复。

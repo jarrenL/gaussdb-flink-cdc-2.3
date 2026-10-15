@@ -4,7 +4,8 @@
 
 > 2026-10-15 更新：此文保留旧问题供溯源。新实例已用 `com.huawei.gaussdb.jdbc.Driver`
 > 和 `jdbc:gaussdb://` 的独立复制连接成功 `start()`、`readPending()`；现行连接器
-> 也已改用这条路径，并根据槽的 `confirm_csn` 显式设置 `output-order=0/1`。
+> 也已改用这条路径。透明多写章节及实测均不要求设置 `output-order`，现行连接器
+> 不查询 `confirm_csn`，也不发送 `output-order`。
 > 下文的旧代码摘录和未解问题不能代表当前联调状态。
 
 > 此问卷的连接代码摘录固定在旧提交 `a55d37c`，用于保留当时的待确认问题。
@@ -159,13 +160,11 @@ TaskManager 除 CMS 外必须可达哪些返回地址和端口？TLS 校验与�
 
 **Q06【P0】目标槽的输出顺序与实际解码行为是什么？**
 
-507.1 开发指南已给出 `sending-batch=0`、`output-order=0` 的默认值，且说明
-`decode-style=j` 会覆盖 `parallel_binary_decoding` 插件的默认二进制格式。
-请核对目标槽的 `confirm_csn`、LSN/CSN 序属性及其与 `output-order` 的组合，
-并用实际报文验证 `parallel-decode-num=2`、`decode-style=j`、逐条发送、
-`include-xids=1`、`include-timestamp=1` 的输出和跨节点事务顺序。
-若该槽为 CSN 序，请说明连接器是否必须显式发送 `output-order=1`，
-以及这对三段位点比较、checkpoint 恢复和 ACK 的影响。
+这段问题提出时，曾把非透明多写选项中的 `output-order` 规则套到 HCS 路径。
+现已由透明多写章节、官方示例和不带该选项的真机读取结果纠正。
+后续仍需在 Flink 中验证 `parallel-decode-num=2`、`decode-style=j`、逐条发送、
+`include-xids=1`、`include-timestamp=1` 的输出，以及跨节点事务顺序、三段位点
+恢复和 checkpoint ACK。
 
 **Q07【P0】readPending() 返回的数据到底如何分帧？**
 

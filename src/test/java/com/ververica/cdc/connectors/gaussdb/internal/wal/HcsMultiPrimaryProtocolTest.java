@@ -235,11 +235,6 @@ class HcsMultiPrimaryProtocolTest {
     }
 
     private static BaseConnection tenantConnection(boolean slotExists) throws Exception {
-        return tenantConnection(slotExists, "56254941488");
-    }
-
-    private static BaseConnection tenantConnection(boolean slotExists, String confirmCsn)
-            throws Exception {
         BaseConnection base = mock(BaseConnection.class);
         when(base.tacGetQueryExecutor())
                 .thenReturn(mock(com.huawei.gaussdb.jdbc.core.QueryExecutor.class));
@@ -251,14 +246,6 @@ class HcsMultiPrimaryProtocolTest {
                 .thenReturn(statement);
         when(statement.executeQuery()).thenReturn(result);
         when(result.next()).thenReturn(slotExists);
-        PreparedStatement orderStatement = mock(PreparedStatement.class);
-        ResultSet orderResult = mock(ResultSet.class);
-        when(base.prepareStatement(
-                        "SELECT confirm_csn FROM pg_get_replication_slots() WHERE slot_name = ?"))
-                .thenReturn(orderStatement);
-        when(orderStatement.executeQuery()).thenReturn(orderResult);
-        when(orderResult.next()).thenReturn(slotExists);
-        when(orderResult.getString(1)).thenReturn(confirmCsn);
         return base;
     }
 
@@ -364,6 +351,9 @@ class HcsMultiPrimaryProtocolTest {
             verify(statement).setString(1, "test");
             verify(sql, never())
                     .prepareStatement("SELECT 1 FROM pg_replication_slots WHERE slot_name = ?");
+            verify(sql, never())
+                    .prepareStatement(
+                            "SELECT confirm_csn FROM pg_get_replication_slots() WHERE slot_name = ?");
             org.mockito.ArgumentCaptor<
                             com.huawei.gaussdb.jdbc.replication.fluent.logical
                                     .LogicalReplicationOptions>
@@ -373,8 +363,7 @@ class HcsMultiPrimaryProtocolTest {
                                             .LogicalReplicationOptions.class);
             verify(protocol).startLogical(options.capture());
             assertThat(options.getValue().getStartLSNPosition().asString()).isEqualTo(FIRST);
-            assertThat(options.getValue().getSlotOptions().getProperty("output-order"))
-                    .isEqualTo("1");
+            assertThat(options.getValue().getSlotOptions()).doesNotContainKey("output-order");
             assertThat(driver.url).isEqualTo("jdbc:hcs-test:test");
             assertThat(driver.properties.getProperty("replication")).isEqualTo("database");
             assertThat(driver.properties.getProperty("preferQueryMode")).isEqualTo("simple");
@@ -387,39 +376,6 @@ class HcsMultiPrimaryProtocolTest {
             verify(nativeStream).close();
             verify(dedicated).close();
             verify(sql, never()).close();
-        } finally {
-            DriverManager.deregisterDriver(driver);
-            wal.close();
-        }
-    }
-
-    @Test
-    void lsnOrderedHcsSlotUsesOutputOrderZero() throws Exception {
-        BaseConnection sql = tenantConnection(true, "0");
-        com.huawei.gaussdb.jdbc.core.BaseConnection dedicated = gaussdbReplicationConnection();
-        com.huawei.gaussdb.jdbc.core.ReplicationProtocol protocol =
-                mock(com.huawei.gaussdb.jdbc.core.ReplicationProtocol.class);
-        when(dedicated.getReplicationProtocol()).thenReturn(protocol);
-        when(protocol.startLogical(any()))
-                .thenReturn(
-                        mock(
-                                com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream
-                                        .class));
-        RecordingDriver driver = new RecordingDriver(dedicated);
-        WalReplicationStream wal = connector(sql, true);
-        DriverManager.registerDriver(driver);
-        try {
-            wal.initialize(FIRST);
-            org.mockito.ArgumentCaptor<
-                            com.huawei.gaussdb.jdbc.replication.fluent.logical
-                                    .LogicalReplicationOptions>
-                    options =
-                            org.mockito.ArgumentCaptor.forClass(
-                                    com.huawei.gaussdb.jdbc.replication.fluent.logical
-                                            .LogicalReplicationOptions.class);
-            verify(protocol).startLogical(options.capture());
-            assertThat(options.getValue().getSlotOptions().getProperty("output-order"))
-                    .isEqualTo("0");
         } finally {
             DriverManager.deregisterDriver(driver);
             wal.close();
