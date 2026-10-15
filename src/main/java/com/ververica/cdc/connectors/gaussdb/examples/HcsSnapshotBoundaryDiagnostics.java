@@ -68,15 +68,20 @@ public final class HcsSnapshotBoundaryDiagnostics {
             connection.setAutoCommit(false);
             try {
                 try (Statement statement = connection.createStatement();
-                        ResultSet snapshot =
-                                statement.executeQuery("SELECT pg_export_snapshot_and_csn()")) {
-                    printRows("snapshot", snapshot);
-                }
-                // Keep this SELECT inside the very same transaction as the exported snapshot.
-                try (Statement statement = connection.createStatement();
                         ResultSet isolation =
                                 statement.executeQuery("SHOW transaction_isolation")) {
                     printRows("isolation", isolation);
+                }
+                try (Statement statement = connection.createStatement();
+                        ResultSet snapshot =
+                                statement.executeQuery("SELECT pg_export_snapshot_and_csn()")) {
+                    printRows("snapshot", snapshot);
+                    System.out.println("snapshot.function=available");
+                } catch (SQLException e) {
+                    System.out.println("snapshot.function=unavailable");
+                    System.out.println("snapshot.sqlstate=" + e.getSQLState());
+                    System.out.println("snapshot.error_code=" + e.getErrorCode());
+                    System.out.println("snapshot.error=" + e.getMessage());
                 }
             } finally {
                 connection.rollback();

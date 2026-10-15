@@ -16,11 +16,18 @@
 
 ## 尚须在目标 HCS 实例确认的边界
 
-本地产品文档有 `pg_export_snapshot_and_csn()` 的说明，称其返回快照标识和 CSN，
-但未证明它在 HCS 507 透明多写 PDB 可用，也未说明其 CSN 和三段复制位点的
+本地产品文档的**通用系统函数**条目有 `pg_export_snapshot_and_csn()` 的说明，
+称其返回快照标识和 CSN；透明多写逻辑复制章节未给出该函数的用法。尚未证明它在
+HCS 507 透明多写 PDB 可用，也未说明其 CSN 和三段复制位点的
 等值边界、跨写节点顺序以及快照事务崩溃后的恢复规则。不能用单个 CN/DN 的 WAL LSN
 代替全局边界。还需确认快照事务能否跨多个扫描 SQL 保持同一个一致视图；文档的
 `pg_export_snapshot()` 条目同时提示部分 GaussDB 部署不支持所需的隔离级别。
+
+产品文档中的 `gs_txn_lsn_time`、`restart-lsn` 指定位点示例归在**非透明多写**
+逻辑解码章节；它们不能证明透明多写支持按该方式从建槽前的历史日志恢复。
+`pg_create_logical_replication_slot` 返回的 `xlog_position` 是建槽时的位置，
+不是与稍后全量查询绑定的三段复制位点。`withStartPosition` 选择解码开始位置，
+不会使 SQL 扫描自动获得该位置对应的一致视图。
 
 只读探针可以在内网执行，不会建槽、删槽、启动复制流、发送 ACK 或读业务表：
 
@@ -30,9 +37,9 @@ java -cp target/gaussdb-flink-cdc-2.3-0.1.0-SNAPSHOT-all.jar \
   /secure/path/hcs.properties
 ```
 
-它会显示现有槽的实际列、实例是否接受 `REPEATABLE READ`、
-`pg_export_snapshot_and_csn()` 的实际返回值及事务隔离级别。如果函数或隔离级别
-不可用，保留完整 SQL 错误信息，并向逻辑复制工程师确认替代方案。
+它会显示现有槽的实际列、实例是否接受 `REPEATABLE READ`、事务隔离级别，
+以及 `pg_export_snapshot_and_csn()` 的返回值或错误。即使函数不可用，探针仍会输出
+前面的诊断结果。函数存在本身也不证明上述衔接语义成立。
 
 在线首次全量只有在边界和恢复语义经产品方及真机验证后才能开放。实现还须覆盖
 全量中途故障、checkpoint/savepoint 恢复、扫描期间 INSERT/UPDATE/DELETE、
