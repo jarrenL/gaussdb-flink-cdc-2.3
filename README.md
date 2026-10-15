@@ -44,8 +44,9 @@ mvn -Pflink-1.16 clean verify
 4. Flink TaskManager 必须能访问配置的 CMS 入口及 CMS 返回的租户节点地址。
 5. 源并行度设为 1，开启 checkpoint。初次启动从复制槽可用位置读取，不能把它当成“仅采集启动后数据”。
 
-没有全量快照与增量衔接；`scan.startup.mode` 仅接受 `incremental`。
-首次全量所需的建槽顺序、快照边界及只读内网探针见
+连接器不执行首次全量；`scan.startup.mode` 仅接受 `incremental`。若允许停写维护窗口，
+客户可先用普通 JDBC 完成全量，并在**恢复写入之前**创建专用复制槽，再用本连接器
+持续采集增量。具体交接顺序、在线方案的边界及只读内网探针见
 [HCS 首次全量与增量衔接](docs/HCS_INITIAL_SNAPSHOT_HANDOFF.md)。
 本实现要求服务端提供按事务排列的 BEGIN、非批量 JSON DML、COMMIT；未知消息或重叠事务使任务失败，
 由 Flink 按 checkpoint 恢复，不会回退到 SQL 解码。
