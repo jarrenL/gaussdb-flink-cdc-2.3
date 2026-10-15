@@ -1,5 +1,11 @@
 # HCS 第三个启动错误：9049 / START_REPLICATION
 
+> 2026-10-15 新实例复测：`com.huawei.gaussdb.jdbc.Driver` + `jdbc:gaussdb://`
+> 建立的独立复制连接已成功 `start()`，返回 `MultiPrimaryReplicationStream`；
+> `readPending()` 读到实际 BEGIN、JSON DML、COMMIT 和三段位点。本连接器已改为
+> 相同驱动与 URL 前缀，并按槽的 `confirmed_csn` 发送 `output-order=0/1`。
+> 这些新增代码仍需在该实例上完成 Flink 端到端验收。
+
 > 2026-10-14 后续证据：内网依据开发指南的透明多写逻辑复制示例，
 > 使用 `com.huawei.opengauss.jdbc.Driver`、`jdbc:opengauss://`、
 > `allowConnThreadPool=false`、`replication=database` 和 `preferQueryMode=simple`
@@ -12,7 +18,7 @@
 `507.0.0.b071-cloudnative-jdk8` 驱动，原始 JAR SHA-256 为
 `68391de275ff60c4a747d6e0d39df1259439d8fde8bf2c4d2b087790cb6896c2`。
 
-## 结论
+## 当时的诊断结论
 
 **堆栈出现 `V3ReplicationProtocol.startLogical`，不能证明选错了普通复制协议。**
 本地 507 JAR 中，MultiPrimaryReplicationProtocol 继承这个方法；它也发送 START_REPLICATION。
@@ -203,6 +209,9 @@ START_REPLICATION 被谁处理？目标版本是否需要不同协议？如果�
 请核对目标槽的 `confirmed_csn`：未传 `output-order` 时默认 0，仅适用于 LSN 序槽；
 CSN 序槽要求 `output-order=1`。仍需成功启动后提供实际 JSON 报文与三段位点，
 以验证本实例行为和事务边界。
+
+后续连接器已在 HCS 启动时读取目标槽的 `confirmed_csn`，并显式设置对应的
+`output-order=0/1`。这仅解决槽序选项配置，仍需真机验证流启动和增量输出。
 
 ## 5. 收到答复后的开发分支
 

@@ -68,7 +68,7 @@ public class GaussDBSourceTask extends SourceTask {
     }
 
     protected Connection connect(GaussDBConfig settings) throws Exception {
-        Class.forName("com.huawei.opengauss.jdbc.Driver");
+        Class.forName("com.huawei.gaussdb.jdbc.Driver");
         return DriverManager.getConnection(settings.jdbcUrl(), settings.authentication());
     }
 
@@ -79,7 +79,7 @@ public class GaussDBSourceTask extends SourceTask {
                 settings.required("username"),
                 settings.required("password"),
                 settings.required("slot.name"),
-                "mppdb_decoding",
+                "parallel_json_decoding",
                 2,
                 "j",
                 false,

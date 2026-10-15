@@ -18,10 +18,10 @@
 
 package com.ververica.cdc.connectors.gaussdb.examples;
 
-import com.huawei.opengauss.jdbc.PGConnection;
-import com.huawei.opengauss.jdbc.core.BaseConnection;
-import com.huawei.opengauss.jdbc.core.ReplicationProtocol;
-import com.huawei.opengauss.jdbc.replication.fluent.logical.LogicalReplicationOptions;
+import com.huawei.gaussdb.jdbc.PGConnection;
+import com.huawei.gaussdb.jdbc.core.BaseConnection;
+import com.huawei.gaussdb.jdbc.core.ReplicationProtocol;
+import com.huawei.gaussdb.jdbc.replication.fluent.logical.LogicalReplicationOptions;
 import com.ververica.cdc.connectors.gaussdb.GaussDBConfig;
 import java.io.InputStream;
 import java.net.URL;
@@ -46,12 +46,12 @@ public final class HcsConnectionDiagnostics {
             throw new IllegalArgumentException(
                     "Usage: HcsConnectionDiagnostics /path/to/hcs.properties | --driver-only");
         }
-        Class<?> driver = Class.forName("com.huawei.opengauss.jdbc.Driver");
+        Class<?> driver = Class.forName("com.huawei.gaussdb.jdbc.Driver");
         describeCode(driver);
         if ("--driver-only".equals(args[0])) {
             Class<?> protocol =
                     Class.forName(
-                            "com.huawei.opengauss.jdbc.core.v3.replication.MultiPrimaryReplicationProtocol");
+                            "com.huawei.gaussdb.jdbc.core.v3.replication.MultiPrimaryReplicationProtocol");
             System.out.println(
                     "multiPrimary.startLogical.declaredBy="
                             + protocol.getMethod("startLogical", LogicalReplicationOptions.class)

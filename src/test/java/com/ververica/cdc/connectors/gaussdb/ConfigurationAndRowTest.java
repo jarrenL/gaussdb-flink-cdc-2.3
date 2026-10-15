@@ -64,10 +64,9 @@ class ConfigurationAndRowTest {
         options.put("hcs.cms-endpoints", " cms-a:8000,192.0.2.1:8001,[2001:db8::1]:9000 ");
         GaussDBConfig config = new GaussDBConfig(options);
         Properties parsed =
-                com.huawei.opengauss.jdbc.Driver.parseURL(
-                        config.jdbcUrl(), config.authentication());
-        com.huawei.opengauss.jdbc.util.HostSpec[] hosts =
-                com.huawei.opengauss.jdbc.Driver.getURLHostSpecs(parsed);
+                com.huawei.gaussdb.jdbc.Driver.parseURL(config.jdbcUrl(), config.authentication());
+        com.huawei.gaussdb.jdbc.util.HostSpec[] hosts =
+                com.huawei.gaussdb.jdbc.Driver.getURLHostSpecs(parsed);
         assertThat(hosts).hasSize(3);
         assertThat(hosts[0].getHost()).isEqualTo("cms-a");
         assertThat(hosts[1].getPort()).isEqualTo(8001);
@@ -75,6 +74,7 @@ class ConfigurationAndRowTest {
         assertThat(config.jdbcUrl()).doesNotContain("password");
         assertThat(parsed.getProperty("connectMode")).isEqualTo("auth");
         assertThat(config.authentication().getProperty("replication")).isNull();
+        assertThat(config.authentication().getProperty("sslmode")).isEqualTo("require");
         assertThat(config.replicationAuthentication().getProperty("replication"))
                 .isEqualTo("database");
         assertThat(config.replicationAuthentication().getProperty("preferQueryMode"))

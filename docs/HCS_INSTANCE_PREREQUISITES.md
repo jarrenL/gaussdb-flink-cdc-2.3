@@ -59,6 +59,6 @@ FROM pg_get_replication_slots()
 WHERE slot_name = 'flink_cdc_slot';
 ```
 
-`confirmed_csn = 0` 是 LSN 序槽，符合当前连接器未设置 `output-order` 时的默认值 `0`；
-非零是 CSN 序槽，需要 `output-order=1`，当前 HCS 连接器尚未提供该配置，不能直接
-用于该槽的验收。槽应由一个采集任务独占。目标实例还须实测流启动、数据输出和断线恢复。
+`confirmed_csn = 0` 是 LSN 序槽，需要 `output-order=0`；非零是 CSN 序槽，需要
+`output-order=1`。连接器会在启动时查询并设置该选项，无法读取时直接失败。
+槽应由一个采集任务独占。目标实例还须实测流启动、数据输出和断线恢复。

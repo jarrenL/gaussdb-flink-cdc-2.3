@@ -74,20 +74,21 @@ CREATE TABLE hcs_changes (event STRING) WITH (
 `[IPv6]:port` 和不同端口。这里填写 CMS 入口，不填写普通 CN 的 HA 复制端口。
 节点选择及租户节点发现由原厂驱动完成。不需要为每个 CMS 建一个 Flink Source。
 连接器通过 `pg_get_replication_slots()` 在普通租户 SQL 连接上检查槽，再使用
-`com.huawei.opengauss.jdbc.Driver` / `jdbc:opengauss://` 建立独立复制连接。
+`com.huawei.gaussdb.jdbc.Driver` / `jdbc:gaussdb://` 建立独立复制连接。
 复制连接配置 `allowConnThreadPool=false`、`replication=database`、
 `preferQueryMode=simple` 和 `assumeMinServerVersion=9.4`，由其 `getReplicationAPI()`
-启动多写逻辑流。内网单独验证这一路径时，错误从 9049 变为 HBA 复制连接拒绝，
-表明已到达复制认证阶段；后续 HBA 调整引发实例重启，目标 PDB 尚未恢复，
-因此此版本仍未完成真实复制流启动及增量验收。
+启动多写逻辑流。新实例已单独实测这套 GaussDB JDBC 连接参数：返回
+`TenantConnection`，`start()` 返回 `MultiPrimaryReplicationStream`，`readPending()`
+读到了 BEGIN、JSON INSERT/UPDATE/DELETE、COMMIT 和三段位点。
+该测试尚未运行本 Flink 连接器；槽序选项、checkpoint ACK 和故障恢复仍待真机联调。
 参见[驱动证据、诊断入口及内网追问](docs/HCS_START_REPLICATION_9049.md)。
 CMS 端口按实际部署填写，例如内网部署使用的 `13003`；示例端口不是固定要求。
 
 507.1 开发指南的逻辑解码选项说明确认：显式 `decode-style=j` 会覆盖槽插件的默认格式，
 因此 `parallel_binary_decoding` 槽名本身不代表本连接一定收到二进制数据；
-`sending-batch` 未设置时默认 `0`（逐条发送）。当前连接器未设置 `output-order`，
-其文档默认值为 `0`，仅适用于 LSN 序槽；若目标槽为 CSN 序槽，需要先核对
-`pg_get_replication_slots()` 的 `confirmed_csn` 和相应启动选项，不能直接复用默认配置。
+`sending-batch` 未设置时默认 `0`（逐条发送）。连接器通过
+`pg_get_replication_slots()` 读取目标槽的 `confirmed_csn`，对 LSN 序槽发送
+`output-order=0`，对 CSN 序槽发送 `output-order=1`；若无法读取该字段则启动失败。
 上述选项在目标实例上的实际输出仍需真机验证。
 
 `schema-name` 和 `table-name` 按 Java 正则整串匹配。多表 JSON 输出中包含 `source.schema/table`。

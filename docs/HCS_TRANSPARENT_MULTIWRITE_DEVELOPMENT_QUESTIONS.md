@@ -2,6 +2,11 @@
 
 日期：2026-10-14。版本：第 1 版。
 
+> 2026-10-15 更新：此文保留旧问题供溯源。新实例已用 `com.huawei.gaussdb.jdbc.Driver`
+> 和 `jdbc:gaussdb://` 的独立复制连接成功 `start()`、`readPending()`；现行连接器
+> 也已改用这条路径，并根据槽的 `confirmed_csn` 显式设置 `output-order=0/1`。
+> 下文的旧代码摘录和未解问题不能代表当前联调状态。
+
 > 此问卷的连接代码摘录固定在旧提交 `a55d37c`，用于保留当时的待确认问题。
 > 当前 `fc59e38` 已改为 `jdbc:opengauss://` 的独立复制连接，并设置
 > `allowConnThreadPool=false`、`replication=database`、`preferQueryMode=simple`、

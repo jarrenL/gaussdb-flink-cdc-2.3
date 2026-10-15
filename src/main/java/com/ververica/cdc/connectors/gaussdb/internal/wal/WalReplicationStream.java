@@ -85,6 +85,7 @@ public class WalReplicationStream {
     private boolean cnDecode;
     private boolean hcsMultiPrimary;
     private Properties connectionProperties;
+    private Integer hcsOutputOrder;
 
     public void setHcsMultiPrimary(boolean enabled, Properties properties) {
         if (enabled
@@ -233,6 +234,7 @@ public class WalReplicationStream {
                 throw new SQLException(
                         "HCS multi-primary requires a pre-created logical slot in the target tenant/database; automatic slot creation is not yet verified");
             }
+            hcsOutputOrder = readHcsOutputOrder();
         }
         // The source normally prepares the slot before taking a JDBC snapshot so that changes
         // committed during the snapshot are retained. Keep this fallback for streaming-only mode.
@@ -294,7 +296,7 @@ public class WalReplicationStream {
     /**
      * Try to initialize using GaussDB JDBC replication API.
      *
-     * <p>HCS opens a dedicated opengauss replication session through CMS with thread-pool routing
+     * <p>HCS opens a dedicated gaussdb replication session through CMS with thread-pool routing
      * disabled. The existing tenant connection remains the SQL session for slot checks. SQL polling
      * fallback is only permitted for ordinary logical decoding.
      */
@@ -305,13 +307,13 @@ public class WalReplicationStream {
             auth.setProperty("user", username);
             auth.setProperty("password", password);
             auth.setProperty("allowConnThreadPool", "false");
-            com.huawei.opengauss.jdbc.PGProperty.REPLICATION.set(auth, "database");
-            com.huawei.opengauss.jdbc.PGProperty.PREFER_QUERY_MODE.set(auth, "simple");
-            com.huawei.opengauss.jdbc.PGProperty.ASSUME_MIN_SERVER_VERSION.set(auth, "9.4");
+            com.huawei.gaussdb.jdbc.PGProperty.REPLICATION.set(auth, "database");
+            com.huawei.gaussdb.jdbc.PGProperty.PREFER_QUERY_MODE.set(auth, "simple");
+            com.huawei.gaussdb.jdbc.PGProperty.ASSUME_MIN_SERVER_VERSION.set(auth, "9.4");
             replicationConnection = DriverManager.getConnection(jdbcUrl, auth);
-            if (replicationConnection instanceof com.huawei.opengauss.jdbc.core.BaseConnection) {
+            if (replicationConnection instanceof com.huawei.gaussdb.jdbc.core.BaseConnection) {
                 Object protocol =
-                        ((com.huawei.opengauss.jdbc.core.BaseConnection) replicationConnection)
+                        ((com.huawei.gaussdb.jdbc.core.BaseConnection) replicationConnection)
                                 .getReplicationProtocol();
                 LOG.info(
                         "HCS native replication connection class={}, protocol class={}",
@@ -330,8 +332,7 @@ public class WalReplicationStream {
             replicationConnection = DriverManager.getConnection(replUrl, auth);
         }
 
-        String driverPackage =
-                hcsMultiPrimary ? "com.huawei.opengauss.jdbc" : "com.huawei.gaussdb.jdbc";
+        String driverPackage = "com.huawei.gaussdb.jdbc";
         Class<?> pgConnectionClass =
                 Class.forName(
                         driverPackage + ".PGConnection",
@@ -475,6 +476,11 @@ public class WalReplicationStream {
         Properties props = new Properties();
         if (cnDecode) {
             props.setProperty("output-order", "1");
+        } else if (hcsMultiPrimary) {
+            if (hcsOutputOrder == null) {
+                throw new IllegalStateException("HCS slot output order has not been determined");
+            }
+            props.setProperty("output-order", String.valueOf(hcsOutputOrder));
         }
 
         if (parallelDecodeNum > 1) {
@@ -698,10 +704,7 @@ public class WalReplicationStream {
         try {
             Class<?> lsnClass =
                     Class.forName(
-                            (hcsMultiPrimary
-                                            ? "com.huawei.opengauss.jdbc"
-                                            : "com.huawei.gaussdb.jdbc")
-                                    + ".replication.LogSequenceNumber",
+                            "com.huawei.gaussdb.jdbc.replication.LogSequenceNumber",
                             false,
                             replicationStream.getClass().getClassLoader());
             Method valueOfMethod = lsnClass.getMethod("valueOf", String.class);
@@ -1262,6 +1265,41 @@ public class WalReplicationStream {
             stmt.setString(1, slotName);
             try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next();
+            }
+        }
+    }
+
+    /** Select the stream order required by this HCS slot, as specified by confirmed_csn. */
+    private int readHcsOutputOrder() throws SQLException {
+        String sql = "SELECT confirmed_csn FROM pg_get_replication_slots() WHERE slot_name = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, slotName);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    throw new SQLException("HCS replication slot disappeared: " + slotName);
+                }
+                String confirmedCsn = rs.getString(1);
+                if (confirmedCsn == null) {
+                    throw new SQLException(
+                            "HCS replication slot has no confirmed_csn: " + slotName);
+                }
+                try {
+                    int outputOrder =
+                            new java.math.BigInteger(confirmedCsn.trim()).signum() == 0 ? 0 : 1;
+                    LOG.info(
+                            "HCS replication slot {} confirmed_csn={} requires output-order={}",
+                            slotName,
+                            confirmedCsn,
+                            outputOrder);
+                    return outputOrder;
+                } catch (NumberFormatException e) {
+                    throw new SQLException(
+                            "Invalid confirmed_csn for HCS replication slot "
+                                    + slotName
+                                    + ": "
+                                    + confirmedCsn,
+                            e);
+                }
             }
         }
     }

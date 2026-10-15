@@ -66,7 +66,7 @@ class HcsMultiPrimaryProtocolTest {
     void tenantStartupOnlyIncludesReplicationWhenExplicitlyRequestedWithCompatibleAssumption()
             throws Exception {
         java.lang.reflect.Method parameters =
-                com.huawei.opengauss.jdbc.core.v3.ConnectionFactoryImpl.class.getDeclaredMethod(
+                com.huawei.gaussdb.jdbc.core.v3.ConnectionFactoryImpl.class.getDeclaredMethod(
                         "getParametersForStartup", String.class, String.class, Properties.class);
         parameters.setAccessible(true);
         for (String assumedVersion : new String[] {null, "9.2.4", "9.4"}) {
@@ -81,7 +81,7 @@ class HcsMultiPrimaryProtocolTest {
                 List<String[]> startup =
                         (List<String[]>)
                                 parameters.invoke(
-                                        new com.huawei.opengauss.jdbc.core.tenant
+                                        new com.huawei.gaussdb.jdbc.core.tenant
                                                 .TenantConnectionFactoryImpl(),
                                         "probe_user",
                                         "probe_database",
@@ -148,14 +148,14 @@ class HcsMultiPrimaryProtocolTest {
     private static class Session {
         final Deque<byte[]> packets = new ArrayDeque<>();
         final List<byte[]> replies = new ArrayList<>();
-        final com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream nativeStream;
+        final com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream nativeStream;
 
         Session(String start) {
-            com.huawei.opengauss.jdbc.copy.CopyDual transport =
-                    (com.huawei.opengauss.jdbc.copy.CopyDual)
+            com.huawei.gaussdb.jdbc.copy.CopyDual transport =
+                    (com.huawei.gaussdb.jdbc.copy.CopyDual)
                             Proxy.newProxyInstance(
-                                    com.huawei.opengauss.jdbc.copy.CopyDual.class.getClassLoader(),
-                                    new Class[] {com.huawei.opengauss.jdbc.copy.CopyDual.class},
+                                    com.huawei.gaussdb.jdbc.copy.CopyDual.class.getClassLoader(),
+                                    new Class[] {com.huawei.gaussdb.jdbc.copy.CopyDual.class},
                                     (p, m, a) -> {
                                         switch (m.getName()) {
                                             case "isActive":
@@ -182,11 +182,11 @@ class HcsMultiPrimaryProtocolTest {
                                         }
                                     });
             nativeStream =
-                    new com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream(
+                    new com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream(
                             transport,
-                            com.huawei.opengauss.jdbc.replication.LogSequenceNumber.valueOf(start),
+                            com.huawei.gaussdb.jdbc.replication.LogSequenceNumber.valueOf(start),
                             1000000,
-                            com.huawei.opengauss.jdbc.replication.ReplicationType.LOGICAL);
+                            com.huawei.gaussdb.jdbc.replication.ReplicationType.LOGICAL);
         }
 
         void packet(String position, String payload) {
@@ -235,6 +235,11 @@ class HcsMultiPrimaryProtocolTest {
     }
 
     private static BaseConnection tenantConnection(boolean slotExists) throws Exception {
+        return tenantConnection(slotExists, "56254941488");
+    }
+
+    private static BaseConnection tenantConnection(boolean slotExists, String confirmedCsn)
+            throws Exception {
         BaseConnection base = mock(BaseConnection.class);
         when(base.tacGetQueryExecutor())
                 .thenReturn(mock(com.huawei.gaussdb.jdbc.core.QueryExecutor.class));
@@ -246,17 +251,25 @@ class HcsMultiPrimaryProtocolTest {
                 .thenReturn(statement);
         when(statement.executeQuery()).thenReturn(result);
         when(result.next()).thenReturn(slotExists);
+        PreparedStatement orderStatement = mock(PreparedStatement.class);
+        ResultSet orderResult = mock(ResultSet.class);
+        when(base.prepareStatement(
+                        "SELECT confirmed_csn FROM pg_get_replication_slots() WHERE slot_name = ?"))
+                .thenReturn(orderStatement);
+        when(orderStatement.executeQuery()).thenReturn(orderResult);
+        when(orderResult.next()).thenReturn(slotExists);
+        when(orderResult.getString(1)).thenReturn(confirmedCsn);
         return base;
     }
 
-    private static com.huawei.opengauss.jdbc.core.BaseConnection opengaussReplicationConnection()
+    private static com.huawei.gaussdb.jdbc.core.BaseConnection gaussdbReplicationConnection()
             throws Exception {
-        com.huawei.opengauss.jdbc.core.BaseConnection base =
-                mock(com.huawei.opengauss.jdbc.core.BaseConnection.class);
+        com.huawei.gaussdb.jdbc.core.BaseConnection base =
+                mock(com.huawei.gaussdb.jdbc.core.BaseConnection.class);
         when(base.tacGetQueryExecutor())
-                .thenReturn(mock(com.huawei.opengauss.jdbc.core.QueryExecutor.class));
-        com.huawei.opengauss.jdbc.replication.TenantReplicationConnectionImpl api =
-                new com.huawei.opengauss.jdbc.replication.TenantReplicationConnectionImpl(base);
+                .thenReturn(mock(com.huawei.gaussdb.jdbc.core.QueryExecutor.class));
+        com.huawei.gaussdb.jdbc.replication.TenantReplicationConnectionImpl api =
+                new com.huawei.gaussdb.jdbc.replication.TenantReplicationConnectionImpl(base);
         when(base.getReplicationAPI()).thenReturn(api);
         return base;
     }
@@ -329,13 +342,13 @@ class HcsMultiPrimaryProtocolTest {
     }
 
     @Test
-    void restoredTripleUsesDedicatedOpengaussReplicationConnection() throws Exception {
+    void restoredTripleUsesDedicatedGaussdbReplicationConnection() throws Exception {
         BaseConnection sql = tenantConnection(true);
-        com.huawei.opengauss.jdbc.core.BaseConnection dedicated = opengaussReplicationConnection();
-        com.huawei.opengauss.jdbc.core.ReplicationProtocol protocol =
-                mock(com.huawei.opengauss.jdbc.core.ReplicationProtocol.class);
-        com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream nativeStream =
-                mock(com.huawei.opengauss.jdbc.replication.MultiPrimaryReplicationStream.class);
+        com.huawei.gaussdb.jdbc.core.BaseConnection dedicated = gaussdbReplicationConnection();
+        com.huawei.gaussdb.jdbc.core.ReplicationProtocol protocol =
+                mock(com.huawei.gaussdb.jdbc.core.ReplicationProtocol.class);
+        com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream nativeStream =
+                mock(com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream.class);
         when(dedicated.getReplicationProtocol()).thenReturn(protocol);
         when(protocol.startLogical(any())).thenReturn(nativeStream);
         RecordingDriver driver = new RecordingDriver(dedicated);
@@ -352,14 +365,16 @@ class HcsMultiPrimaryProtocolTest {
             verify(sql, never())
                     .prepareStatement("SELECT 1 FROM pg_replication_slots WHERE slot_name = ?");
             org.mockito.ArgumentCaptor<
-                            com.huawei.opengauss.jdbc.replication.fluent.logical
+                            com.huawei.gaussdb.jdbc.replication.fluent.logical
                                     .LogicalReplicationOptions>
                     options =
                             org.mockito.ArgumentCaptor.forClass(
-                                    com.huawei.opengauss.jdbc.replication.fluent.logical
+                                    com.huawei.gaussdb.jdbc.replication.fluent.logical
                                             .LogicalReplicationOptions.class);
             verify(protocol).startLogical(options.capture());
             assertThat(options.getValue().getStartLSNPosition().asString()).isEqualTo(FIRST);
+            assertThat(options.getValue().getSlotOptions().getProperty("output-order"))
+                    .isEqualTo("1");
             assertThat(driver.url).isEqualTo("jdbc:hcs-test:test");
             assertThat(driver.properties.getProperty("replication")).isEqualTo("database");
             assertThat(driver.properties.getProperty("preferQueryMode")).isEqualTo("simple");
@@ -372,6 +387,39 @@ class HcsMultiPrimaryProtocolTest {
             verify(nativeStream).close();
             verify(dedicated).close();
             verify(sql, never()).close();
+        } finally {
+            DriverManager.deregisterDriver(driver);
+            wal.close();
+        }
+    }
+
+    @Test
+    void lsnOrderedHcsSlotUsesOutputOrderZero() throws Exception {
+        BaseConnection sql = tenantConnection(true, "0");
+        com.huawei.gaussdb.jdbc.core.BaseConnection dedicated = gaussdbReplicationConnection();
+        com.huawei.gaussdb.jdbc.core.ReplicationProtocol protocol =
+                mock(com.huawei.gaussdb.jdbc.core.ReplicationProtocol.class);
+        when(dedicated.getReplicationProtocol()).thenReturn(protocol);
+        when(protocol.startLogical(any()))
+                .thenReturn(
+                        mock(
+                                com.huawei.gaussdb.jdbc.replication.MultiPrimaryReplicationStream
+                                        .class));
+        RecordingDriver driver = new RecordingDriver(dedicated);
+        WalReplicationStream wal = connector(sql, true);
+        DriverManager.registerDriver(driver);
+        try {
+            wal.initialize(FIRST);
+            org.mockito.ArgumentCaptor<
+                            com.huawei.gaussdb.jdbc.replication.fluent.logical
+                                    .LogicalReplicationOptions>
+                    options =
+                            org.mockito.ArgumentCaptor.forClass(
+                                    com.huawei.gaussdb.jdbc.replication.fluent.logical
+                                            .LogicalReplicationOptions.class);
+            verify(protocol).startLogical(options.capture());
+            assertThat(options.getValue().getSlotOptions().getProperty("output-order"))
+                    .isEqualTo("0");
         } finally {
             DriverManager.deregisterDriver(driver);
             wal.close();
@@ -414,9 +462,9 @@ class HcsMultiPrimaryProtocolTest {
     @Test
     void tenantStreamStartFailureClosesDedicatedConnectionWithoutSqlFallback() throws Exception {
         BaseConnection sql = tenantConnection(true);
-        com.huawei.opengauss.jdbc.core.BaseConnection dedicated = opengaussReplicationConnection();
-        com.huawei.opengauss.jdbc.core.ReplicationProtocol protocol =
-                mock(com.huawei.opengauss.jdbc.core.ReplicationProtocol.class);
+        com.huawei.gaussdb.jdbc.core.BaseConnection dedicated = gaussdbReplicationConnection();
+        com.huawei.gaussdb.jdbc.core.ReplicationProtocol protocol =
+                mock(com.huawei.gaussdb.jdbc.core.ReplicationProtocol.class);
         when(dedicated.getReplicationProtocol()).thenReturn(protocol);
         when(protocol.startLogical(any())).thenThrow(new SQLException("stream start failed"));
         RecordingDriver driver = new RecordingDriver(dedicated);
@@ -439,9 +487,9 @@ class HcsMultiPrimaryProtocolTest {
     @Test
     void tenantRejectsOrdinaryBuilderAndClosesDedicatedConnection() throws Exception {
         BaseConnection sql = tenantConnection(true);
-        com.huawei.opengauss.jdbc.core.BaseConnection dedicated = opengaussReplicationConnection();
-        com.huawei.opengauss.jdbc.replication.PGReplicationConnectionImpl ordinaryApi =
-                new com.huawei.opengauss.jdbc.replication.PGReplicationConnectionImpl(dedicated);
+        com.huawei.gaussdb.jdbc.core.BaseConnection dedicated = gaussdbReplicationConnection();
+        com.huawei.gaussdb.jdbc.replication.PGReplicationConnectionImpl ordinaryApi =
+                new com.huawei.gaussdb.jdbc.replication.PGReplicationConnectionImpl(dedicated);
         when(dedicated.getReplicationAPI()).thenReturn(ordinaryApi);
         RecordingDriver driver = new RecordingDriver(dedicated);
         WalReplicationStream wal = connector(sql, true);
@@ -491,5 +539,40 @@ class HcsMultiPrimaryProtocolTest {
         session.packet("0/65,0/1,0/2000", "unexpected");
         assertThatThrownBy(() -> wal.readChanges(100)).isInstanceOf(SQLException.class);
         assertThat(wal.getLastLsn()).isEqualTo(FIRST);
+    }
+
+    @Test
+    void parsesRealHcsInsertUpdateDeleteFramesAndCommitPositions() throws Exception {
+        Session session = new Session(ReplicationPosition.MULTI_PRIMARY_START);
+        WalReplicationStream wal = session.connector();
+        session.packet(
+                "D/59CEB803,0/6,0/AD3E", "BEGIN CSN: 57341294595 wal_id: 6 first_lsn: 0/AD3E");
+        session.packet(
+                "D/59CEB803,0/6,0/AE1F",
+                "{\"table_name\":\"flink_cdc_schema.cdc_probe\",\"op_type\":\"INSERT\",\"columns_name\":[\"id\",\"name\"],\"columns_type\":[\"integer\",\"text\"],\"columns_val\":[\"71343\",\"'CDC_TEST_71343'\"],\"old_keys_name\":[],\"old_keys_type\":[],\"old_keys_val\":[]}");
+        session.packet("D/59CEB803,0/6,0/AF33", "COMMIT XID: 10");
+        session.packet(
+                "D/59F7E390,0/6,0/AFC9", "BEGIN CSN: 57343992720 wal_id: 6 first_lsn: 0/AFC9");
+        session.packet(
+                "D/59F7E390,0/6,0/B0DB",
+                "{\"table_name\":\"flink_cdc_schema.cdc_probe\",\"op_type\":\"UPDATE\",\"columns_name\":[\"id\",\"name\"],\"columns_type\":[\"integer\",\"text\"],\"columns_val\":[\"71343\",\"'UPDATED_71343'\"],\"old_keys_name\":[\"id\"],\"old_keys_type\":[\"integer\"],\"old_keys_val\":[\"71343\"]}");
+        session.packet("D/59F7E390,0/6,0/B141", "COMMIT XID: 1048586");
+        session.packet(
+                "D/5A20A5BD,0/6,0/B1D7", "BEGIN CSN: 57346663869 wal_id: 6 first_lsn: 0/B1D7");
+        session.packet(
+                "D/5A20A5BD,0/6,0/B2AD",
+                "{\"table_name\":\"flink_cdc_schema.cdc_probe\",\"op_type\":\"DELETE\",\"columns_name\":[],\"columns_type\":[],\"columns_val\":[],\"old_keys_name\":[\"id\"],\"old_keys_type\":[\"integer\"],\"old_keys_val\":[\"71343\"]}");
+        session.packet("D/5A20A5BD,0/6,0/B3BC", "COMMIT XID: 2097162");
+
+        List<WalChange> changes = wal.readChanges(100);
+        assertThat(changes)
+                .extracting(WalChange::getType)
+                .containsExactly(
+                        WalChange.ChangeType.INSERT,
+                        WalChange.ChangeType.UPDATE,
+                        WalChange.ChangeType.DELETE);
+        assertThat(changes).extracting(WalChange::getSchema).containsOnly("flink_cdc_schema");
+        assertThat(changes).extracting(WalChange::getTable).containsOnly("cdc_probe");
+        assertThat(wal.getLastLsn()).isEqualTo("D/5A20A5BD,0/6,0/B3BC");
     }
 }
