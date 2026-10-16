@@ -48,6 +48,8 @@ mvn -Pflink-1.16 clean verify
 客户可先用普通 JDBC 完成全量，并在**恢复写入之前**创建专用复制槽，再用本连接器
 持续采集增量。具体交接顺序、在线方案的边界及只读内网探针见
 [HCS 首次全量与增量衔接](docs/HCS_INITIAL_SNAPSHOT_HANDOFF.md)。
+若要在隔离测试 PDB 中验证在线快照与三段位点的边界，可运行
+[快照衔接集成实验](docs/HCS_SNAPSHOT_HANDOFF_VERIFICATION.md)。
 本实现要求服务端提供按事务排列的 BEGIN、非批量 JSON DML、COMMIT；未知消息或重叠事务使任务失败，
 由 Flink 按 checkpoint 恢复，不会回退到 SQL 解码。
 
