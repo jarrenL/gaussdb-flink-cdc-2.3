@@ -193,28 +193,37 @@ public final class HcsSnapshotHandoffVerification {
                 assessChanges(changes, boundary.csn, original, expected, failures);
                 String resumeFrom = firstPostSnapshotPosition(changes, boundary.csn);
                 if (resumeFrom != null) {
-                    int laterCount = 0;
+                    Map<String, Integer> expectedLater = new HashMap<>();
                     for (WalChange change : changes) {
                         if (ReplicationPosition.compare(change.getLsn(), resumeFrom) > 0) {
-                            laterCount++;
+                            addSignature(expectedLater, change);
                         }
                     }
                     List<WalChange> resumed =
                             collectStream(
-                                    config, admin, slot, schema, table, resumeFrom, laterCount);
-                    boolean exactResume = resumed.size() == laterCount;
+                                    config,
+                                    admin,
+                                    slot,
+                                    schema,
+                                    table,
+                                    resumeFrom,
+                                    countSignatures(expectedLater));
+                    Map<String, Integer> actualLater = new HashMap<>();
+                    boolean exactResume = true;
                     for (WalChange change : resumed) {
                         exactResume &= ReplicationPosition.compare(change.getLsn(), resumeFrom) > 0;
+                        addSignature(actualLater, change);
                     }
+                    exactResume &= expectedLater.equals(actualLater);
                     report(
                             "THREE_PART_RESUME",
                             exactResume,
                             "from="
                                     + resumeFrom
-                                    + ", expected-later="
-                                    + laterCount
+                                    + ", expected="
+                                    + expectedLater
                                     + ", actual="
-                                    + resumed.size(),
+                                    + actualLater,
                             failures);
                 } else {
                     report(
@@ -436,6 +445,26 @@ public final class HcsSnapshotHandoffVerification {
             }
         }
         return null;
+    }
+
+    private static void addSignature(Map<String, Integer> counts, WalChange change) {
+        String signature =
+                change.getType()
+                        + ":"
+                        + idOf(change)
+                        + ":"
+                        + Long.toUnsignedString(change.getCsn())
+                        + ":"
+                        + change.getLsn()
+                        + ":"
+                        + payloadOf(change);
+        counts.put(signature, counts.getOrDefault(signature, 0) + 1);
+    }
+
+    private static int countSignatures(Map<String, Integer> counts) {
+        int total = 0;
+        for (Integer count : counts.values()) total += count;
+        return total;
     }
 
     static void assessChanges(
