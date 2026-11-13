@@ -28,9 +28,13 @@ import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalReplicationStream;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceRecord;
@@ -42,8 +46,12 @@ import org.slf4j.LoggerFactory;
 public class GaussDBSourceTask extends SourceTask {
     private static final Logger LOG = LoggerFactory.getLogger(GaussDBSourceTask.class);
     private GaussDBConfig config;
-    private Connection connection;
+    // Ordinary SQL session only. WalReplicationStream owns a separate COPY connection.
+    private Connection sqlConnection;
     private WalReplicationStream stream;
+    private ScheduledExecutorService statusExecutor;
+    private volatile Exception statusFailure;
+    private volatile long lastStatusFeedbackNanos;
     private volatile boolean running;
     private boolean initialProgress;
     private boolean snapshotPending;
@@ -66,16 +74,17 @@ public class GaussDBSourceTask extends SourceTask {
                 offset == null ? ReplicationPosition.MULTI_PRIMARY_START : requirePosition(offset);
         acknowledged = lastRead;
         try {
-            connection = connect(config);
+            sqlConnection = connect(config);
             if (config.initialSnapshot())
-                prepareInitialSlot(config, connection, offset == null ? null : lastRead);
-            stream = createStream(config, connection);
+                prepareInitialSlot(config, sqlConnection, offset == null ? null : lastRead);
+            stream = createStream(config, sqlConnection);
             stream.setHcsMultiPrimary(true, config.replicationAuthentication());
             stream.initialize(lastRead);
             running = true;
             publication = null;
             snapshotPending = config.initialSnapshot() && offset == null;
             initialProgress = true;
+            startStatusUpdates();
         } catch (Exception e) {
             stop();
             throw new ConnectException("Could not start GaussDB HCS native replication", e);
@@ -110,27 +119,86 @@ public class GaussDBSourceTask extends SourceTask {
         return new JdbcSnapshotAccess(sql, settings);
     }
 
+    private void startStatusUpdates() {
+        statusFailure = null;
+        lastStatusFeedbackNanos = 0;
+        statusExecutor = createStatusExecutor();
+        int interval = config.positiveInt("replication.status.interval.ms", 1000);
+        statusExecutor.scheduleWithFixedDelay(
+                () -> {
+                    if (!running || statusFailure != null) return;
+                    try {
+                        // Serialized with native reads and checkpoint ACK inside the stream.
+                        // Never set applied/flushed here, and never consume business changes.
+                        stream.sendStatus();
+                        lastStatusFeedbackNanos = System.nanoTime();
+                    } catch (Exception failure) {
+                        if (running) {
+                            statusFailure = failure;
+                            LOG.warn(
+                                    "HCS replication status feedback failed ("
+                                            + statusDiagnostics(failure)
+                                            + ")",
+                                    failure);
+                        }
+                    }
+                },
+                interval,
+                interval,
+                TimeUnit.MILLISECONDS);
+        LOG.info("HCS replication status feedback scheduled every {} ms", interval);
+    }
+
+    protected ScheduledExecutorService createStatusExecutor() {
+        return Executors.newSingleThreadScheduledExecutor(
+                runnable -> {
+                    Thread thread = new Thread(runnable, "gaussdb-cdc-replication-status");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+    }
+
+    private boolean isRunningAndHealthy() {
+        if (!running) return false;
+        Exception failure = statusFailure;
+        if (failure != null)
+            throw new ConnectException(
+                    "HCS replication status feedback failed ("
+                            + statusDiagnostics(failure)
+                            + "); restart from the completed Flink checkpoint",
+                    failure);
+        return true;
+    }
+
     @Override
     public List<SourceRecord> poll() throws InterruptedException {
         if (!running) return null;
+        try {
+            isRunningAndHealthy();
+        } catch (ConnectException failure) {
+            discardPublication(failure);
+            throw failure;
+        }
         if (snapshotPending || publication != null) {
+            InitialSnapshot snapshot = null;
             try {
                 SnapshotPublication current = publication;
                 if (current == null) {
-                    current =
+                    snapshot =
                             new InitialSnapshot(
-                                            config,
-                                            createSnapshotAccess(config, connection),
-                                            stream,
-                                            () -> running)
-                                    .prepare();
+                                    config,
+                                    createSnapshotAccess(config, sqlConnection),
+                                    stream,
+                                    this::isRunningAndHealthy);
+                    current = snapshot.prepare();
                     publication = current;
                     snapshotPending = false;
                     initialProgress = false;
                 }
-                if (!running || Thread.currentThread().isInterrupted())
+                if (!isRunningAndHealthy() || Thread.currentThread().isInterrupted())
                     throw new InterruptedException("Initial snapshot publication cancelled");
                 SourceRecord record = current.next();
+                isRunningAndHealthy();
                 if (Boolean.TRUE.equals(record.sourceOffset().get("gaussdb_snapshot_completed")))
                     lastRead = requirePosition(record.sourceOffset());
                 if (!current.hasNext()) {
@@ -144,7 +212,11 @@ public class GaussDBSourceTask extends SourceTask {
             } catch (Exception e) {
                 discardPublication(e);
                 throw new ConnectException(
-                        "HCS initial snapshot failed; restart from the completed Flink checkpoint",
+                        "HCS initial snapshot failed (phase="
+                                + (snapshot == null ? "PUBLICATION" : snapshot.getPhase())
+                                + ", "
+                                + statusDiagnostics(e)
+                                + "); restart from the completed Flink checkpoint",
                         e);
             }
         }
@@ -172,15 +244,36 @@ public class GaussDBSourceTask extends SourceTask {
             }
         } catch (Exception e) {
             throw new ConnectException(
-                    "GaussDB stream failed; restart from the completed Flink checkpoint", e);
+                    "GaussDB stream failed ("
+                            + statusDiagnostics(e)
+                            + "); restart from the completed Flink checkpoint",
+                    e);
         }
         Thread.sleep(config.positiveInt("poll.interval.ms", 100));
         return Collections.emptyList();
     }
 
+    private String statusDiagnostics(Throwable failure) {
+        long last = lastStatusFeedbackNanos;
+        return sqlErrorCode(failure)
+                + ", statusFeedbackAgeMs="
+                + (last == 0 ? "none" : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - last));
+    }
+
+    private static String sqlErrorCode(Throwable failure) {
+        // Exception.toString()/printStackTrace() do not normally include SQLException metadata.
+        // Preserve the original cause and expose codes without copying SQL/server message text.
+        for (int depth = 0; failure != null && depth < 16; depth++, failure = failure.getCause())
+            if (failure instanceof SQLException) {
+                SQLException sql = (SQLException) failure;
+                return "sqlState=" + sql.getSQLState() + ", errorCode=" + sql.getErrorCode();
+            }
+        return "sqlState=unavailable";
+    }
+
     @Override
     public synchronized void commitRecord(SourceRecord record) {
-        if (!running) return;
+        if (!isRunningAndHealthy()) return;
         if (!config.partition().equals(record.sourcePartition()))
             throw new ConnectException(
                     "Checkpoint belongs to another GaussDB tenant/database/slot");
@@ -218,6 +311,10 @@ public class GaussDBSourceTask extends SourceTask {
     @Override
     public synchronized void stop() {
         running = false;
+        if (statusExecutor != null) {
+            statusExecutor.shutdownNow();
+            statusExecutor = null;
+        }
         SnapshotPublication pending = publication;
         publication = null;
         if (pending != null)
@@ -227,9 +324,9 @@ public class GaussDBSourceTask extends SourceTask {
                 LOG.warn("Could not clean snapshot scratch state", e);
             }
         if (stream != null) stream.close();
-        if (connection != null)
+        if (sqlConnection != null)
             try {
-                connection.close();
+                sqlConnection.close();
             } catch (Exception ignored) {
                 /* closing */
             }

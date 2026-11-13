@@ -59,6 +59,9 @@ mvn -Pflink-1.16 clean verify
 结合 DRS 的日志保留/进度管理与通用 Source 重叠合并的当前实现、丢失/重复风险及落盘限制，
 见[组合方案与落盘合并](docs/HCS_HYBRID_SNAPSHOT.md)。落盘不提供新的读取一致性保证，
 也不等于已经实现分块 checkpoint。
+针对内网在等待 LOW 时出现的 `Socket is closed`，新增跨快照阶段的复制状态反馈、
+关闭流报错和阶段/SQLSTATE 诊断，见[LOW 等待断流分析](docs/HCS_LOW_SIGNAL_SOCKET_FAILURE.md)。
+该补丁修正已确认的保活与错误处理缺口，尚未确认该次真机断流的最初关闭原因。
 若要在隔离测试 PDB 中验证在线快照与三段位点的边界，可运行
 [快照衔接集成实验](docs/HCS_SNAPSHOT_HANDOFF_VERIFICATION.md)。
 本实现要求服务端提供按事务排列的 BEGIN、非批量 JSON DML、COMMIT；未知消息或重叠事务使任务失败，
@@ -148,6 +151,7 @@ JSON 模式下，UPDATE/DELETE 的 `before` 只包含 WAL 实际提供的旧列�
 | `server-time-zone` | `UTC` | 官方行反序列化器使用的时区 |
 | `connect.timeout.seconds` | `15` | JDBC 单次连接超时，不是多入口总超时 |
 | `poll.interval.ms` | `100` | 无变更时轮询间隔 |
+| `replication.status.interval.ms` | `1000` | 独立复制状态反馈间隔；扫描/输出暂停 WAL 读取时仍运行，不推进 applied/flushed，须小于目标有效发送超时并留余量 |
 | `batch.size` | `1000` | 读取目标批量；不会拆开尚未提交的事务 |
 
 ## DataStream 和内网验证入口

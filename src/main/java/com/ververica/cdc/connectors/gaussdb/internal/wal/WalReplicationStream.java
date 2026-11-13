@@ -57,7 +57,9 @@ public class WalReplicationStream {
 
     private static final Logger LOG = LoggerFactory.getLogger(WalReplicationStream.class);
 
+    /** Ordinary SQL metadata session; never used as the native COPY transport. */
     private final Connection connection;
+
     private final String jdbcUrl;
     private final String username;
     private final String password;
@@ -77,7 +79,7 @@ public class WalReplicationStream {
     private final Integer replicationPort;
 
     private String lastLsn;
-    private boolean running = false;
+    private volatile boolean running = false;
     private boolean useReplicationApi = false;
     // SQL peek does not move the server slot. Keep the LSN of every row read since the last
     // completed checkpoint so later peeks can skip that prefix while still retaining it for replay.
@@ -309,7 +311,18 @@ public class WalReplicationStream {
             com.huawei.gaussdb.jdbc.PGProperty.PREFER_QUERY_MODE.set(auth, "simple");
             com.huawei.gaussdb.jdbc.PGProperty.ASSUME_MIN_SERVER_VERSION.set(auth, "9.4");
             replicationConnection = DriverManager.getConnection(jdbcUrl, auth);
+            if (replicationConnection == connection)
+                throw new SQLException("Driver reused the SQL session for native replication");
             if (replicationConnection instanceof com.huawei.gaussdb.jdbc.core.BaseConnection) {
+                Object executor =
+                        ((com.huawei.gaussdb.jdbc.core.BaseConnection) replicationConnection)
+                                .getQueryExecutor();
+                if (executor != null
+                        && connection instanceof com.huawei.gaussdb.jdbc.core.BaseConnection
+                        && executor
+                                == ((com.huawei.gaussdb.jdbc.core.BaseConnection) connection)
+                                        .getQueryExecutor())
+                    throw new SQLException("SQL and native replication share a QueryExecutor");
                 Object protocol =
                         ((com.huawei.gaussdb.jdbc.core.BaseConnection) replicationConnection)
                                 .getReplicationProtocol();
@@ -318,6 +331,7 @@ public class WalReplicationStream {
                         replicationConnection.getClass().getName(),
                         protocol == null ? "null" : protocol.getClass().getName());
             }
+            LOG.info("HCS SQL and native COPY use separate connection objects");
         } else {
             String replUrl = buildReplicationUrl(jdbcUrl);
             LOG.info("Attempting to create replication connection: {}", replUrl);
@@ -505,13 +519,37 @@ public class WalReplicationStream {
     }
 
     /**
+     * Send liveness feedback while SQL scanning or snapshot publication pauses WAL reads. Applied
+     * and flushed positions remain those of the last completed checkpoint. This uses the same
+     * monitor as readChanges/acknowledgeLsn: the driver is never accessed concurrently by them.
+     */
+    public synchronized void sendStatus() throws SQLException {
+        if (!running || !useReplicationApi || replicationStream == null)
+            throw new SQLException("Native replication stream is not active", "08006");
+        try {
+            if ((Boolean)
+                    replicationStream.getClass().getMethod("isClosed").invoke(replicationStream))
+                throw new SQLException("Native replication stream is closed", "08006");
+            replicationStream.getClass().getMethod("forceUpdateStatus").invoke(replicationStream);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof SQLException) throw (SQLException) cause;
+            throw new SQLException("Failed to send replication status feedback", cause);
+        } catch (SQLException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SQLException("Failed to send replication status feedback", e);
+        }
+    }
+
+    /**
      * Read changes using JDBC replication API (streaming mode).
      *
      * <p>Uses readPending() to read available batches from the replication stream. After each
-     * batch, updates the flushed LSN and forces a status update to the server, which allows the
-     * server to send more data. This is necessary because mppdb_decoding with sending-batch=1
-     * accumulates data into 1MB batches, and the server waits for client acknowledgement (status
-     * update) before sending subsequent batches.
+     * batch, sends a status update WITHOUT advancing applied/flushed, which allows the server to
+     * send more data. This is necessary because mppdb_decoding with sending-batch=1 accumulates
+     * data into 1MB batches, and the server waits for client acknowledgement (status update) before
+     * sending subsequent batches.
      *
      * <p>For decode-style=b (binary), each batch contains compact binary-encoded change events
      * decoded by MppdbBinaryDecoder. For decode-style=j (JSON), each batch contains newline-
@@ -525,9 +563,8 @@ public class WalReplicationStream {
             Method isClosedMethod = replicationStream.getClass().getMethod("isClosed");
             boolean isClosed = (Boolean) isClosedMethod.invoke(replicationStream);
             if (isClosed) {
-                LOG.warn("Replication stream is closed");
                 running = false;
-                return changes;
+                throw new SQLException("Native replication stream is closed", "08006");
             }
 
             LOG.debug(
@@ -660,6 +697,8 @@ public class WalReplicationStream {
                 throw (SQLException) cause;
             }
             throw new SQLException("Failed to read from replication stream", cause);
+        } catch (SQLException e) {
+            throw e;
         } catch (Exception e) {
             throw new SQLException("Failed to read from replication stream", e);
         }

@@ -76,6 +76,7 @@ public final class GaussDBConfig implements Serializable {
                     "scan.snapshot.allow-unverified-consistency must be true or false");
         positiveInt("connect.timeout.seconds", 15);
         positiveInt("poll.interval.ms", 100);
+        positiveInt("replication.status.interval.ms", 1000);
         positiveInt("batch.size", 1000);
         Pattern.compile(get("schema-name", "public"));
         Pattern.compile(required("table-name"));

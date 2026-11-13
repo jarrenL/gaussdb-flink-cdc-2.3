@@ -1,5 +1,36 @@
 # 验证记录
 
+## 2026-11-13：等待 LOW 断流核查、定时状态反馈与阶段诊断
+
+基于落盘版本 `f56d629`。内网补充将故障从“全量结束后切增量”修正为“prepare 中等待
+LOW 时 native readPending 报 Socket is closed”；现有实现已使用独立 SQL/COPY 连接。
+约 254 秒的时间线、缺失关闭日志和堆栈中未显示 SQLSTATE，不足以确定首次关闭者。
+本次没有在 HCS 复现该故障，没有将“客户端 SSL 空闲关闭”等假设写成已证实根因。
+
+修正已确认的缺口：默认每秒独立发送 native 状态反馈，覆盖目录检查、SQL 扫描及快照
+发布暂停读流的阶段；与读流/ACK 串行，反馈不读取 WAL、不设置 applied/flushed。
+关闭流由返回空列表改为立即报错；反馈失败传给任务，清理未完成快照的私有文件。
+初始化增加同 Connection/QueryExecutor 拒绝检查。错误中加入 phase、SQLSTATE/vendor code
+和最近一次后台反馈的客户端发送时间间隔，保留原异常链；不自动重连或跳过交接边界。
+
+执行 `scripts/verify-matrix.sh`，Flink 1.13.6、1.14.6、1.15.4、1.16.3 每版通过
+165 项测试，失败/错误/跳过均为 0，编译和打包均通过。新增真实定时线程测试核对扫描、
+发布暂停期间仍反馈，HIGH 后尾部事务和实时增量不遗漏、不初始化第二条流、仅显式模拟
+completed checkpoint 才 ACK，stop 后线程退出。失败测试覆盖 WAIT_LOW 的 SocketException
+及 SQLSTATE、扫描/发布期反馈失败与立即清理、停止后取消调度。真实 507 驱动合成
+CopyDual 报文验证后台反馈不提前推进 applied/flushed、不读取 WAL、关闭流报错及原异常
+保留；共享底层 executor 在 COPY 启动前被拒绝。既有官方 CDC checkpoint/恢复测试继续通过。
+
+`mvn spotless:check` 和 `git diff --check` 通过。最终包检查确认新增方法/阶段字段存在，
+修改的生产类均为 Java 8 字节码，SQL Factory SPI 保留，未包含 Flink streaming 引擎类。
+Java 8 执行最终包的 `HcsConnectionDiagnostics --driver-only`，结果
+`DRIVER_ONLY_COMPLETE_NO_DATABASE_CONNECTION`；没有连接数据库或启动复制。
+
+最终 Flink 1.16.3 包大小 35734703 字节，SHA-256：
+`f66f5d84aa832a34f0fef99b21603a5e75317ca66c2b7d93a38053d69c382dad`。
+本次是保活、错误处理和诊断修正，不等于已完成真实 HCS 的故障根因复现/修复验收。
+[定位依据与内网复测步骤](docs/HCS_LOW_SIGNAL_SOCKET_FAILURE.md)。
+
 ## 2026-11-13：组合方案第一步，源端合并默认落盘
 
 保持通用 Source 输出契约，沿用先建槽、完整三段位点恢复和 completed checkpoint ACK，

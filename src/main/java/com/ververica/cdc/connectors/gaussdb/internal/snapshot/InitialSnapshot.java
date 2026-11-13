@@ -44,6 +44,7 @@ public final class InitialSnapshot {
     private final BooleanSupplier running;
     private long deadline;
     private String observed = ReplicationPosition.MULTI_PRIMARY_START;
+    private String phase = "VALIDATING_TABLES";
 
     public InitialSnapshot(
             GaussDBConfig config,
@@ -71,14 +72,17 @@ public final class InitialSnapshot {
                     tables.size());
             String low = "flink_low_" + UUID.randomUUID();
             String high = "flink_high_" + UUID.randomUUID();
+            phase = "WRITE_LOW";
             checkRunning();
             jdbc.writeSignal(low);
+            phase = "WAIT_LOW";
             Boundary before = awaitSignal(low, null, Collections.emptyList());
             LOG.info(
                     "HCS initial snapshot LOW committed at {}; starting JDBC scan",
                     before.position);
             // Do not apply interval WAL before all scan rows are loaded: an older JDBC image could
             // otherwise overwrite a newer WAL value. The slot is not acknowledged during the scan.
+            phase = "SCAN";
             jdbc.scan(
                     tables,
                     row -> {
@@ -87,21 +91,26 @@ public final class InitialSnapshot {
                     },
                     running);
             checkRunning();
+            phase = "WRITE_HIGH";
             jdbc.writeSignal(high);
             LOG.info("HCS JDBC scan completed; waiting for HIGH and backfilling interval WAL");
+            phase = "WAIT_HIGH";
             Boundary after = awaitSignal(high, buffer, before.trailing);
             if (ReplicationPosition.compare(after.position, before.position) <= 0)
                 throw new IllegalStateException(
                         "Snapshot HIGH marker did not follow LOW in the native stream");
+            phase = "VERIFY_TABLES";
             if (!tables.equals(jdbc.discoverTables()))
                 throw new IllegalStateException(
                         "Captured tables or schema changed during initial snapshot; restart with stable DDL");
             checkRunning();
+            phase = "CLEANUP";
             jdbc.cleanSignals(low, high);
             buffer.seal();
             LOG.info(
                     "HCS initial snapshot backfill completed at {}; publishing bounded snapshot batches",
                     after.position);
+            phase = "PUBLICATION";
             return new SnapshotPublication(
                     config, buffer, after.position, observed, after.trailing);
         } catch (Exception | Error failure) {
@@ -112,6 +121,11 @@ public final class InitialSnapshot {
             }
             throw failure;
         }
+    }
+
+    /** Included in task errors even when INFO logging is disabled. Contains no credentials. */
+    public String getPhase() {
+        return phase;
     }
 
     private Boundary awaitSignal(

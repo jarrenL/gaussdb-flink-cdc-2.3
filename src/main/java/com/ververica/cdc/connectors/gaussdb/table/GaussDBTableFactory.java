@@ -81,6 +81,7 @@ public final class GaussDBTableFactory implements DynamicTableSourceFactory {
                 "sslmode",
                 "connect.timeout.seconds",
                 "poll.interval.ms",
+                "replication.status.interval.ms",
                 "batch.size",
                 "scan.startup.mode",
                 "scan.snapshot.signal-table",

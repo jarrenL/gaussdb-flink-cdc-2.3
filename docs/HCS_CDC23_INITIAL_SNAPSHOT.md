@@ -155,6 +155,10 @@ checkpoint 切换成 initial 会被拒绝，避免误跳过全量；改变表选
   有序、完整的提交事务；槽须保留扫描期间及未完成 checkpoint 所需的日志。
 - LOW/HIGH 等待有超时；底层 JDBC/native 调用的实际取消响应还受驱动和网络超时约束。
   扫描期间不持续读取 WAL，必须评估槽日志保留空间和快照总时长。
+  扫描、目录检查及全量发布期间由独立定时任务发送复制状态反馈（默认每秒），不读取业务
+  WAL、不设置 applied/flushed；与读流及 checkpoint ACK 串行访问 native stream。
+  反馈失败在扫描检查点/下一次 poll 或 commitRecord 传播，关闭流直接失败，不当成空闲。
+  这降低未读流时的反馈超时风险，不能保证连接不会因网络、驱动或服务端故障断开。
 - 源端 checkpoint 语义与端到端 exactly-once 不同；下游必须使用对应事务/checkpoint sink。
 
 ## 目标 HCS 真机验收
@@ -174,3 +178,4 @@ checkpoint 切换成 initial 会被拒绝，避免误跳过全量；改变表选
 本地回归测试使用真实官方 CDC 引擎/507 驱动与受控 SQL/复制流；尚无真机验收结论。
 
 针对后续内网补全指南的逐项核查，见[补全指南核查与处理](HCS_DRS_SUPPLEMENT_REVIEW.md)。
+等待 LOW 断流的修正定位、诊断字段和复测步骤见[LOW 等待断流分析](HCS_LOW_SIGNAL_SOCKET_FAILURE.md)。

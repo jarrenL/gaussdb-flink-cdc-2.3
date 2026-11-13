@@ -564,8 +564,79 @@ class HcsMultiPrimaryProtocolTest {
         session.packet("0/65,0/2,0/1030", new byte[] {(byte) 0xc3, (byte) 0x28});
         assertThatThrownBy(() -> wal.readChanges(100))
                 .isInstanceOf(SQLException.class)
-                .hasCauseInstanceOf(SQLException.class)
-                .hasStackTraceContaining("Logical replication payload is not valid UTF-8");
+                .hasMessageContaining("Logical replication payload is not valid UTF-8");
+    }
+
+    @Test
+    void statusFeedbackDoesNotReadWalOrAdvanceCheckpointPositions() throws Exception {
+        Session session = new Session(ReplicationPosition.MULTI_PRIMARY_START);
+        WalReplicationStream wal = session.connector();
+        session.packet(FIRST, "BEGIN CSN: 100");
+        wal.sendStatus();
+        wal.sendStatus();
+        assertThat(session.packets).hasSize(1);
+        assertThat(wal.getLastLsn()).isEqualTo(ReplicationPosition.MULTI_PRIMARY_START);
+        assertThat(session.applied()).containsExactly(0, 0, 0);
+        assertThat(session.flushed()).containsExactly(0, 0, 0);
+        wal.acknowledgeLsn(FIRST);
+        wal.sendStatus();
+        assertThat(session.applied()).containsExactly(100, 2, 4096);
+        assertThat(session.flushed()).containsExactly(100, 2, 4096);
+        assertThat(session.packets).hasSize(1);
+    }
+
+    @Test
+    void closedNativeStreamFailsInsteadOfLookingLikeIdleDatabase() throws Exception {
+        Session session = new Session(ReplicationPosition.MULTI_PRIMARY_START);
+        WalReplicationStream wal = session.connector();
+        session.nativeStream.close();
+        assertThatThrownBy(wal::sendStatus)
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("closed");
+        try {
+            wal.readChanges(100);
+            throw new AssertionError("Closed native stream must fail");
+        } catch (SQLException e) {
+            assertThat(e.getSQLState()).isEqualTo("08006");
+        }
+        assertThat(wal.getLastLsn()).isEqualTo(ReplicationPosition.MULTI_PRIMARY_START);
+    }
+
+    @Test
+    void nativeStatusPreservesDriverSqlStateAndSocketCause() throws Exception {
+        Session session = new Session(ReplicationPosition.MULTI_PRIMARY_START);
+        WalReplicationStream wal = session.connector();
+        MultiPrimaryReplicationStream broken = mock(MultiPrimaryReplicationStream.class);
+        SQLException failure =
+                new SQLException(
+                        "copy failed", "08006", new java.net.SocketException("Socket is closed"));
+        org.mockito.Mockito.doThrow(failure).when(broken).forceUpdateStatus();
+        set(wal, "replicationStream", broken);
+        assertThatThrownBy(wal::sendStatus).isSameAs(failure);
+        verify(broken, never()).setAppliedLSN(any());
+        verify(broken, never()).setFlushedLSN(any());
+    }
+
+    @Test
+    void sharedSqlAndReplicationExecutorIsRejectedBeforeStartingCopy() throws Exception {
+        BaseConnection sql = tenantConnection(true);
+        BaseConnection dedicated = gaussdbReplicationConnection();
+        QueryExecutor shared = mock(QueryExecutor.class);
+        when(sql.getQueryExecutor()).thenReturn(shared);
+        when(dedicated.getQueryExecutor()).thenReturn(shared);
+        RecordingDriver driver = new RecordingDriver(dedicated);
+        WalReplicationStream wal = connector(sql, true);
+        DriverManager.registerDriver(driver);
+        try {
+            assertThatThrownBy(() -> wal.initialize(FIRST))
+                    .hasRootCauseMessage("SQL and native replication share a QueryExecutor");
+            verify(dedicated, never()).getReplicationAPI();
+            verify(dedicated).close();
+            verify(sql, never()).close();
+        } finally {
+            DriverManager.deregisterDriver(driver);
+            wal.close();
+        }
     }
 
     @Test

@@ -256,6 +256,7 @@ class ConfigurationAndRowTest {
         Map<String, String> options = TestConfig.options();
         options.put("connector", "gaussdb-cdc");
         options.put("output.format", "json");
+        options.put("replication.status.interval.ms", "1000");
         ResolvedSchema schema = ResolvedSchema.of(Column.physical("event", DataTypes.STRING()));
         CatalogTable table =
                 CatalogTable.of(
