@@ -1,5 +1,10 @@
 # 给内网 AI：GaussDB HCS 透明多写 CDC 开发背景与问题
 
+2026-11-13 更新：本文保留增量基线的历史问题清单。用户已补充 DRS 的建槽、三段恢复边界、
+全量不设置 REPEATABLE READ 和 Applier 重叠修复调用链。独立分支现已开发有界的在线
+initial 原型；本次实现与仍需真机验证的条件见
+[CDC 2.3 在线全量开发说明](HCS_CDC23_INITIAL_SNAPSHOT.md)。
+
 日期：2026-10-14。版本：第 1 版。
 
 > 2026-10-15 更新：此文保留旧问题供溯源。新实例已用 `com.huawei.gaussdb.jdbc.Driver`

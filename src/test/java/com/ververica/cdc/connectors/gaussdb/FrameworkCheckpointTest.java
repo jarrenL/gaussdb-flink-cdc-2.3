@@ -24,6 +24,7 @@ import static org.mockito.Mockito.*;
 
 import com.ververica.cdc.connectors.gaussdb.internal.GaussDBSourceTask;
 import com.ververica.cdc.connectors.gaussdb.internal.TransactionDeserializer;
+import com.ververica.cdc.connectors.gaussdb.internal.snapshot.JdbcSnapshotAccess;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalReplicationStream;
 import com.ververica.cdc.debezium.DebeziumSourceFunction;
@@ -80,6 +81,14 @@ class FrameworkCheckpointTest {
     }
 
     public static class FakeTask extends GaussDBSourceTask {
+        protected void prepareInitialSlot(GaussDBConfig config, Connection sql, String restored) {
+            session.slotPreparations.add(restored == null ? "NEW" : restored);
+        }
+
+        protected JdbcSnapshotAccess createSnapshotAccess(GaussDBConfig config, Connection sql) {
+            return session.snapshotAccess;
+        }
+
         protected Connection connect(GaussDBConfig config) {
             return mock(Connection.class);
         }
@@ -90,6 +99,8 @@ class FrameworkCheckpointTest {
     }
 
     static class Session {
+        JdbcSnapshotAccess snapshotAccess;
+        final List<String> slotPreparations = new CopyOnWriteArrayList<>();
         final BlockingQueue<List<WalChange>> batches = new LinkedBlockingQueue<>();
         final List<String> acknowledgements = new CopyOnWriteArrayList<>();
         final AtomicReference<String> start = new AtomicReference<>(),
@@ -170,7 +181,10 @@ class FrameworkCheckpointTest {
         Future<?> running;
 
         Harness(byte[] restored, boolean block) throws Exception {
-            Properties p = TestConfig.config().engineProperties();
+            this(restored, block, TestConfig.config().engineProperties());
+        }
+
+        Harness(byte[] restored, boolean block, Properties p) throws Exception {
             p.setProperty("connector.class", FakeConnector.class.getName());
             source =
                     new DebeziumSourceFunction<>(

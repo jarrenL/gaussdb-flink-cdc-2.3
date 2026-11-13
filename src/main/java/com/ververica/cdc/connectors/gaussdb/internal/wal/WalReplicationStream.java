@@ -1261,6 +1261,13 @@ public class WalReplicationStream {
                 return 1184;
             case "date":
                 return 1082;
+            case "time":
+            case "time without time zone":
+                return 1083;
+            case "bytea":
+                return 17;
+            case "uuid":
+                return 2950;
             default:
                 return 25; // fallback to text
         }
@@ -1268,7 +1275,10 @@ public class WalReplicationStream {
 
     /** Check if the replication slot exists. */
     private boolean slotExists() throws SQLException {
-        String sql = "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?";
+        String sql =
+                hcsMultiPrimary
+                        ? "SELECT 1 FROM gs_logical_replication_slot WHERE name = ?"
+                        : "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, slotName);
             try (ResultSet rs = stmt.executeQuery()) {

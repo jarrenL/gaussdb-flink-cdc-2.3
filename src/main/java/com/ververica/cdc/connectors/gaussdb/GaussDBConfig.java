@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.regex.Pattern;
 
-/** Connection configuration for the experimental HCS incremental source. */
+/** Connection configuration for the experimental HCS source. */
 public final class GaussDBConfig implements Serializable {
     private static final long serialVersionUID = 1L;
     private final Map<String, String> options;
@@ -47,10 +47,20 @@ public final class GaussDBConfig implements Serializable {
                 }) {
             required(key);
         }
-        if (!"incremental".equals(get("scan.startup.mode", "incremental"))) {
-            throw new IllegalArgumentException(
-                    "Only scan.startup.mode=incremental is implemented; pre-create the HCS slot");
+        if (!java.util.Arrays.asList("incremental", "initial")
+                .contains(get("scan.startup.mode", "incremental"))) {
+            throw new IllegalArgumentException("scan.startup.mode must be incremental or initial");
         }
+        if (initialSnapshot()) {
+            com.ververica.cdc.connectors.gaussdb.internal.snapshot.SnapshotTable.signalTable(
+                    required("scan.snapshot.signal-table"));
+        }
+        positiveInt("scan.snapshot.max.rows", 100000);
+        positiveInt("scan.snapshot.max.bytes", 67108864);
+        positiveInt("scan.snapshot.fetch.size", 1000);
+        positiveInt("scan.snapshot.timeout.seconds", 300);
+        if (!java.util.Arrays.asList("true", "false").contains(get("scan.slot.create", "true")))
+            throw new IllegalArgumentException("scan.slot.create must be true or false");
         positiveInt("connect.timeout.seconds", 15);
         positiveInt("poll.interval.ms", 100);
         positiveInt("batch.size", 1000);
@@ -125,8 +135,35 @@ public final class GaussDBConfig implements Serializable {
     public boolean matches(String schema, String table) {
         return schema != null
                 && table != null
+                && !isSignalTable(schema, table)
                 && Pattern.matches(get("schema-name", "public"), schema)
                 && Pattern.matches(required("table-name"), table);
+    }
+
+    public boolean initialSnapshot() {
+        return "initial".equals(get("scan.startup.mode", "incremental"));
+    }
+
+    public boolean isSignalTable(String schema, String table) {
+        String signal = get("scan.snapshot.signal-table", "");
+        return !signal.isEmpty() && signal.equals(schema + "." + table);
+    }
+
+    /** Bind completed snapshots to the captured table selection; changing it requires a new job. */
+    public String snapshotScope() {
+        return get("schema-name", "public")
+                + "\n"
+                + required("table-name")
+                + "\n"
+                + required("scan.snapshot.signal-table");
+    }
+
+    public void validateSnapshotOffset(Map<String, ?> offset) {
+        if (initialSnapshot()
+                && (!Boolean.TRUE.equals(offset.get("gaussdb_snapshot_completed"))
+                        || !snapshotScope().equals(offset.get("gaussdb_snapshot_scope"))))
+            throw new IllegalArgumentException(
+                    "Initial mode requires a completed snapshot checkpoint with the same table selection and signal table");
     }
 
     public Properties engineProperties() {

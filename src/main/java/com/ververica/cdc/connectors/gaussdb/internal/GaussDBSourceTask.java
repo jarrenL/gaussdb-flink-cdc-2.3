@@ -19,6 +19,9 @@
 package com.ververica.cdc.connectors.gaussdb.internal;
 
 import com.ververica.cdc.connectors.gaussdb.GaussDBConfig;
+import com.ververica.cdc.connectors.gaussdb.internal.snapshot.HcsSlotLifecycle;
+import com.ververica.cdc.connectors.gaussdb.internal.snapshot.InitialSnapshot;
+import com.ververica.cdc.connectors.gaussdb.internal.snapshot.JdbcSnapshotAccess;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.ReplicationPosition;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalReplicationStream;
@@ -39,6 +42,7 @@ public class GaussDBSourceTask extends SourceTask {
     private WalReplicationStream stream;
     private volatile boolean running;
     private boolean initialProgress;
+    private boolean snapshotPending;
     private volatile String lastRead;
     private String acknowledged;
 
@@ -51,15 +55,19 @@ public class GaussDBSourceTask extends SourceTask {
     public void start(Map<String, String> properties) {
         config = new GaussDBConfig(properties);
         Map<String, Object> offset = context.offsetStorageReader().offset(config.partition());
+        if (offset != null) config.validateSnapshotOffset(offset);
         lastRead =
                 offset == null ? ReplicationPosition.MULTI_PRIMARY_START : requirePosition(offset);
         acknowledged = lastRead;
         try {
             connection = connect(config);
+            if (config.initialSnapshot())
+                prepareInitialSlot(config, connection, offset == null ? null : lastRead);
             stream = createStream(config, connection);
             stream.setHcsMultiPrimary(true, config.replicationAuthentication());
             stream.initialize(lastRead);
             running = true;
+            snapshotPending = config.initialSnapshot() && offset == null;
             initialProgress = true;
         } catch (Exception e) {
             stop();
@@ -86,9 +94,39 @@ public class GaussDBSourceTask extends SourceTask {
                 settings.positiveInt("batch.size", 1000));
     }
 
+    protected void prepareInitialSlot(GaussDBConfig settings, Connection sql, String restored)
+            throws Exception {
+        HcsSlotLifecycle.prepare(sql, settings, restored);
+    }
+
+    protected JdbcSnapshotAccess createSnapshotAccess(GaussDBConfig settings, Connection sql) {
+        return new JdbcSnapshotAccess(sql, settings);
+    }
+
     @Override
     public List<SourceRecord> poll() throws InterruptedException {
         if (!running) return null;
+        if (snapshotPending) {
+            try {
+                List<SourceRecord> records =
+                        new InitialSnapshot(
+                                        config,
+                                        createSnapshotAccess(config, connection),
+                                        stream,
+                                        () -> running)
+                                .execute();
+                lastRead = requirePosition(records.get(records.size() - 1).sourceOffset());
+                snapshotPending = false;
+                initialProgress = false;
+                return records;
+            } catch (InterruptedException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new ConnectException(
+                        "HCS initial snapshot failed before publication; restart from the completed Flink checkpoint",
+                        e);
+            }
+        }
         // Exit the framework's initial snapshot phase even on an idle database.
         if (initialProgress) {
             initialProgress = false;
@@ -125,6 +163,7 @@ public class GaussDBSourceTask extends SourceTask {
         if (!config.partition().equals(record.sourcePartition()))
             throw new ConnectException(
                     "Checkpoint belongs to another GaussDB tenant/database/slot");
+        config.validateSnapshotOffset(record.sourceOffset());
         String position = requirePosition(record.sourceOffset());
         if (WalReplicationStream.isLsnNewer(position, lastRead))
             throw new ConnectException("Checkpoint is ahead of the delivered GaussDB stream");

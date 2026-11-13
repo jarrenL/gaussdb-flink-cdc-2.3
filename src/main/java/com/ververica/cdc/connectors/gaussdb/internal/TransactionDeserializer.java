@@ -86,6 +86,8 @@ public final class TransactionDeserializer<T> implements DebeziumDeserialization
     }
 
     public static SourceRecord rowRecord(SourceRecord batch, Struct row) {
+        boolean snapshot =
+                !"false".equals(((Struct) batch.value()).getStruct("source").getString("snapshot"));
         String position =
                 ReplicationPosition.requireMultiPrimary(row.getString("position")).asString();
         Map<String, Integer> columns = new LinkedHashMap<>();
@@ -112,7 +114,7 @@ public final class TransactionDeserializer<T> implements DebeziumDeserialization
         String op;
         switch (row.getString("op")) {
             case "INSERT":
-                op = "c";
+                op = snapshot ? "r" : "c";
                 break;
             case "UPDATE":
                 op = "u";
@@ -132,14 +134,16 @@ public final class TransactionDeserializer<T> implements DebeziumDeserialization
                         .put("db", batch.sourcePartition().get("database"))
                         .put("schema", row.getString("schema"))
                         .put("table", row.getString("table"))
-                        .put("snapshot", "false")
+                        .put("snapshot", snapshot ? "true" : "false")
                         .put("ts_ms", now)
                         .put("position", position);
         Struct value =
                 new Struct(envelope)
                         .put(
                                 "before",
-                                "c".equals(op) ? null : image(beforeData, row.getArray("before")))
+                                ("c".equals(op) || "r".equals(op))
+                                        ? null
+                                        : image(beforeData, row.getArray("before")))
                         .put(
                                 "after",
                                 "d".equals(op) ? null : image(afterData, row.getArray("after")))

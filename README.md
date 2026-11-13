@@ -5,7 +5,7 @@
 Debezium 引擎、反序列化接口及 checkpoint/offset 存储，并在底层接入配套 507 JDBC
 的 `MultiPrimaryReplicationStream`。不是原 JDBC 连接器仓库中的 `cdc-2.4.x` 模块。
 
-**当前仅支持增量联调，不提供生产验收保证。** 真实透明多写实例的消息布局、解码选项、
+**当前支持增量联调，并新增实验性 `initial` 全量＋增量模式，尚未通过生产验收。** 真实透明多写实例的消息布局、解码选项、
 CMS 切换和节点故障恢复需要在目标 HCS 版本实测。普通 Distributed CN/DN 实例不能替代该验收。
 
 ## 版本与构建
@@ -38,13 +38,17 @@ mvn -Pflink-1.16 clean verify
 
 1. 确认实例运行的是 HCS **透明多写**形态，并使用与其配套的 507 驱动。
 2. 准备 CMS 入口、租户认证信息、租户数据库名称和数据库账号。
-3. 由管理员按目标版本文档开启逻辑复制，并在目标租户/数据库预建一个专用复制槽。
-   本连接器不会自动建槽、删槽、修改 HBA 或数据库参数。
+3. 由管理员按目标版本文档开启逻辑复制。`incremental` 模式须预建专用复制槽；
+   `initial` 模式可在首次启动时创建缺失的专用槽，恢复时绝不补建丢失的槽。
+   连接器不删槽、不修改 HBA 或数据库参数。
    新实例的具体操作记录见[透明多写实例接入前置条件](docs/HCS_INSTANCE_PREREQUISITES.md)。
 4. Flink TaskManager 必须能访问配置的 CMS 入口及 CMS 返回的租户节点地址。
 5. 源并行度设为 1，开启 checkpoint。初次启动从复制槽可用位置读取，不能把它当成“仅采集启动后数据”。
 
-连接器不执行首次全量；`scan.startup.mode` 仅接受 `incremental`。若允许停写维护窗口，
+`scan.startup.mode=initial` 新增有界的首次全量与源端日志合并，要求显式配置专用信号表、
+有主键的普通表及源并行度 1。实现、信号表建表 SQL、资源限制与验收条件见
+[透明多写在线全量开发说明](docs/HCS_CDC23_INITIAL_SNAPSHOT.md)。默认仍为 `incremental`。
+若允许停写维护窗口，
 客户可先用普通 JDBC 完成全量，并在**恢复写入之前**创建专用复制槽，再用本连接器
 持续采集增量。具体交接顺序、在线方案的边界及只读内网探针见
 [HCS 首次全量与增量衔接](docs/HCS_INITIAL_SNAPSHOT_HANDOFF.md)。
@@ -78,7 +82,9 @@ CREATE TABLE hcs_changes (event STRING) WITH (
 `hcs.cms-endpoints` 可填一个或多个入口，每项显式写端口，逗号分隔；支持域名、IPv4、
 `[IPv6]:port` 和不同端口。这里填写 CMS 入口，不填写普通 CN 的 HA 复制端口。
 节点选择及租户节点发现由原厂驱动完成。不需要为每个 CMS 建一个 Flink Source。
-连接器通过 `pg_get_replication_slots()` 在普通租户 SQL 连接上检查槽，再使用
+透明多写通过 `gs_logical_replication_slot` 检查槽，槽 active/plugin 元数据仍从
+`pg_get_replication_slots()` 获取；恢复预检查使用 `gs_logical_replication_slot_stream` 的
+三段 restart 边界。复制流使用
 `com.huawei.gaussdb.jdbc.Driver` / `jdbc:gaussdb://` 建立独立复制连接。
 复制连接配置 `allowConnThreadPool=false`、`replication=database`、
 `preferQueryMode=simple` 和 `assumeMinServerVersion=9.4`，由其 `getReplicationAPI()`
@@ -111,11 +117,17 @@ JSON 模式下，UPDATE/DELETE 的 `before` 只包含 WAL 实际提供的旧列�
 | `hcs.cms-endpoints` | 必填 | CMS `host:port` 列表 |
 | `database` / `username` / `password` | 必填 | 目标租户中的数据库与账号 |
 | `hcs.tenant-name` / `hcs.tenant-password` | 必填 | 租户认证信息，与数据库密码分开 |
-| `slot.name` | 必填 | 已存在的专用复制槽 |
+| `slot.name` | 必填 | 专用复制槽；增量模式须预建 |
 | `table-name` | 必填 | 表名正则 |
 | `schema-name` | `public` | Schema 正则 |
 | `sslmode` | `require` | 507 JDBC SSL 模式 |
-| `scan.startup.mode` | `incremental` | 仅增量 |
+| `scan.startup.mode` | `incremental` | `incremental` 或实验性 `initial` |
+| `scan.snapshot.signal-table` | 无 | initial 必填，专用 `schema.table`；连接器在此写入并清理 LOW/HIGH 信号 |
+| `scan.slot.create` | `true` | 仅 initial 首次启动可创建缺失的槽；恢复时缺槽始终失败 |
+| `scan.snapshot.max.rows` | `100000` | 全量合并缓冲区行数上限 |
+| `scan.snapshot.max.bytes` | `67108864` | 全量合并缓冲区估算字节上限，并非 JVM 总内存上限 |
+| `scan.snapshot.fetch.size` | `1000` | JDBC 扫描游标 fetch 大小，并非断点分块大小 |
+| `scan.snapshot.timeout.seconds` | `300` | 全量与 LOW/HIGH 边界等待时限；同时作为单条扫描 SQL 超时 |
 | `output.format` | `row` | `row` 或 `json` |
 | `server-time-zone` | `UTC` | 官方行反序列化器使用的时区 |
 | `connect.timeout.seconds` | `15` | JDBC 单次连接超时，不是多入口总超时 |

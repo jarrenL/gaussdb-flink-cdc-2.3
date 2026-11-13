@@ -21,8 +21,9 @@ package com.ververica.cdc.connectors.gaussdb.internal;
 import com.ververica.cdc.connectors.gaussdb.GaussDBConfig;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
@@ -67,6 +68,16 @@ public final class CommittedBatch {
 
     public static SourceRecord create(
             GaussDBConfig config, List<WalChange> changes, String position) {
+        return create(config, changes, position, false);
+    }
+
+    public static SourceRecord snapshot(
+            GaussDBConfig config, List<WalChange> changes, String position) {
+        return create(config, changes, position, true);
+    }
+
+    private static SourceRecord create(
+            GaussDBConfig config, List<WalChange> changes, String position, boolean snapshot) {
         List<Struct> rows = new ArrayList<>();
         for (WalChange change : changes) {
             if (!config.matches(change.getSchema(), change.getTable())) continue;
@@ -85,15 +96,16 @@ public final class CommittedBatch {
                         .put(
                                 "source",
                                 new Struct(SOURCE)
-                                        .put("snapshot", "false")
+                                        .put("snapshot", snapshot ? "last" : "false")
                                         .put("ts_ms", System.currentTimeMillis()))
                         .put("rows", rows);
-        return new SourceRecord(
-                config.partition(),
-                Collections.singletonMap(POSITION, position),
-                "gaussdb.committed",
-                BATCH,
-                batch);
+        Map<String, Object> offset = new HashMap<>();
+        offset.put(POSITION, position);
+        if (config.initialSnapshot()) {
+            offset.put("gaussdb_snapshot_completed", true);
+            offset.put("gaussdb_snapshot_scope", config.snapshotScope());
+        }
+        return new SourceRecord(config.partition(), offset, "gaussdb.committed", BATCH, batch);
     }
 
     private static List<Struct> columns(List<WalChange.ColumnValue> columns) {

@@ -67,6 +67,7 @@ public final class GaussDBSource<T> extends DebeziumSourceFunction<T> {
                 if (!config.partition().equals(offset.sourcePartition))
                     throw new IllegalArgumentException(
                             "Checkpoint belongs to another GaussDB tenant/database/slot");
+                config.validateSnapshotOffset(offset.sourceOffset);
                 Object position =
                         offset.sourceOffset.get(
                                 com.ververica.cdc.connectors.gaussdb.internal.CommittedBatch

@@ -1,5 +1,41 @@
 # 验证记录
 
+## 2026-11-13：CDC 2.3 在线 initial 实验实现
+
+分支 `feature/hcs-cdc23-initial-handoff`，官方 CDC 2.3.0、507 CloudNative JDBC、JDK 11，
+Java 8 字节码。执行 `scripts/verify-matrix.sh`，每个 profile 均进行 clean、编译、测试与打包：
+
+| Flink 引擎 | 编译 / 打包 | 自动测试 | 失败 / 错误 / 跳过 |
+| --- | --- | --- | --- |
+| 1.13.6 | 通过 | 138 | 0 / 0 / 0 |
+| 1.14.6 | 通过 | 138 | 0 / 0 / 0 |
+| 1.15.4 | 通过 | 138 | 0 / 0 / 0 |
+| 1.16.3（最终包） | 通过 | 138 | 0 / 0 / 0 |
+
+新增验证包含：源端重叠合并、主键变更、跨表/复合键、完整镜像和缓冲区限制、空表边界、
+HIGH 超时、乱序、表重建、缺槽拒绝补建、active 槽拒绝、三段 restart 边界、JDBC 游标及
+取消回滚、中文/bytea 和官方 RowData 的 snapshot READ 输出。
+
+`InitialFrameworkCheckpointTest` 启动未经修改的官方 CDC 2.3 Debezium 引擎，底层 SQL/
+复制流受控：扫描中 checkpoint 不保存完成 offset；输出第一行阻塞时 checkpoint 不能
+截断整批快照；completed 回调前不 ACK，完成后 ACK HIGH；新引擎从完整三段位点恢复，
+不再调用全量扫描，并继续输出新增量。原有增量协议、事务和恢复测试同时通过。
+
+最终 all.jar 已检查含有 initial 实现和 SQL Factory SPI，未打入 Flink streaming 引擎类。
+包：`target/gaussdb-flink-cdc-2.3-0.1.0-SNAPSHOT-all.jar`。
+最终包的 `HcsConnectionDiagnostics --driver-only` 执行成功，输出
+`DRIVER_ONLY_COMPLETE_NO_DATABASE_CONNECTION`，确认只是本地驱动入口验证。
+SHA-256：`d031aac58ddbb869f4ad40b038382f40f7f543d7ea1b990b8a059e811cd533dd`。
+
+**没有连接真实 HCS 租户。** 上述是本地代码、协议和框架验证；不代表多节点全局可见性、
+长事务保留、真实系统表/权限和节点切换已通过验收。首次全量使用有界内存合并，不是大表
+分块快照。适用范围、信号表建表和真机清单见
+[在线全量开发说明](docs/HCS_CDC23_INITIAL_SNAPSHOT.md)。
+
+以下保留此前增量模式的历史验证记录；测试中的探针负向用例会打印预期 FAIL 文本，
+测试是否成功以 Surefire 的失败/错误统计及 Maven 退出码为准。
+
+
 2026-10-14 更新：内网使用开发指南给出的 `com.huawei.opengauss.jdbc.Driver`、
 `jdbc:opengauss://`、`allowConnThreadPool=false`、`replication=database`、
 `preferQueryMode=simple` 建立独立复制连接后，9049 变为
@@ -81,4 +117,5 @@
 不等于完整 Flink 集群端到端验收，也不等于真实 HCS 节点切换验收。
 
 内网请使用专用槽验证实际日志格式、多节点写入、事务回滚、数据类型、checkpoint 恢复、
-CMS 与数据节点切换。当前不支持全量快照、自动创建槽或 DDL schema evolution。
+CMS 与数据节点切换。以上旧增量基线不提供全量快照、自动建槽或 DDL schema evolution；2026-11-13 的
+实验性 initial 能力见文首更新，DDL schema evolution 仍未支持。

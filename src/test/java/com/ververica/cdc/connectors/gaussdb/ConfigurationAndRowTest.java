@@ -84,7 +84,7 @@ class ConfigurationAndRowTest {
     }
 
     @Test
-    void rejectsBadCmsAndUnsupportedSnapshot() {
+    void rejectsBadCmsAndSnapshotWithoutSignalTable() {
         for (String endpoints :
                 Arrays.asList(
                         "",
@@ -102,7 +102,7 @@ class ConfigurationAndRowTest {
         }
         Map<String, String> o = TestConfig.options();
         o.put("scan.startup.mode", "initial");
-        assertThatThrownBy(() -> new GaussDBConfig(o)).hasMessageContaining("incremental");
+        assertThatThrownBy(() -> new GaussDBConfig(o)).hasMessageContaining("signal-table");
     }
 
     @Test

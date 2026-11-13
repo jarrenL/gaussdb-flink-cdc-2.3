@@ -1,5 +1,10 @@
 # HCS 首次全量与增量衔接
 
+2026-11-13 更新：独立分支 `feature/hcs-cdc23-initial-handoff` 已新增实验性在线
+`initial` 模式，以 LOW/HIGH 信号和源端主键合并完成衔接；详见
+[CDC 2.3 在线全量开发说明](HCS_CDC23_INITIAL_SNAPSHOT.md)。以下停写流程仍可用于
+默认 `incremental` 模式；下文未实现在线全量的表述描述的是增量基线。
+
 当前 `scan.startup.mode=incremental` 只读取复制槽保留的增量。不能简单在它前面增加
 `SELECT *`：全量查询期间仍有写入，若没有与该查询一致的复制流边界，就可能漏掉写入，
 或先发全量新值再回放边界前的旧变更，使下游数据回退。

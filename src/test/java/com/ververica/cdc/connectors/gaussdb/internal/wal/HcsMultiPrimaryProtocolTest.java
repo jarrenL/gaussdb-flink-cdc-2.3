@@ -245,6 +245,8 @@ class HcsMultiPrimaryProtocolTest {
         when(base.getReplicationAPI()).thenReturn(tenantApi);
         PreparedStatement statement = mock(PreparedStatement.class);
         ResultSet result = mock(ResultSet.class);
+        when(base.prepareStatement("SELECT 1 FROM gs_logical_replication_slot WHERE name = ?"))
+                .thenReturn(statement);
         when(base.prepareStatement("SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?"))
                 .thenReturn(statement);
         when(statement.executeQuery()).thenReturn(result);
@@ -350,7 +352,7 @@ class HcsMultiPrimaryProtocolTest {
             verify(dedicated).getReplicationAPI();
             PreparedStatement statement =
                     sql.prepareStatement(
-                            "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?");
+                            "SELECT 1 FROM gs_logical_replication_slot WHERE name = ?");
             verify(statement).setString(1, "test");
             verify(sql, never())
                     .prepareStatement("SELECT 1 FROM pg_replication_slots WHERE slot_name = ?");

@@ -83,6 +83,12 @@ public final class GaussDBTableFactory implements DynamicTableSourceFactory {
                 "poll.interval.ms",
                 "batch.size",
                 "scan.startup.mode",
+                "scan.snapshot.signal-table",
+                "scan.snapshot.max.rows",
+                "scan.snapshot.max.bytes",
+                "scan.snapshot.fetch.size",
+                "scan.snapshot.timeout.seconds",
+                "scan.slot.create",
                 "output.format",
                 "server-time-zone");
     }
@@ -154,7 +160,9 @@ public final class GaussDBTableFactory implements DynamicTableSourceFactory {
 
         @Override
         public String asSummaryString() {
-            return "GaussDB HCS CDC 2.3 (experimental incremental)";
+            return "GaussDB HCS CDC 2.3 (experimental "
+                    + config.get("scan.startup.mode", "incremental")
+                    + ")";
         }
     }
 
