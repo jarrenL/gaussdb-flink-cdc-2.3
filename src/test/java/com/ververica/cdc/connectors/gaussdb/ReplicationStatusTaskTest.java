@@ -48,6 +48,7 @@ class ReplicationStatusTaskTest {
         final InitialSnapshotTest.Fixture fixture;
         final Map<String, String> options = InitialSnapshotTest.options();
         final Connection sql = mock(Connection.class);
+        final OffsetStorageReader offsets = mock(OffsetStorageReader.class);
         final ScheduledExecutorService timer;
         final GaussDBSourceTask task;
         Runnable tick;
@@ -85,7 +86,6 @@ class ReplicationStatusTaskTest {
                         }
                     };
             SourceTaskContext context = mock(SourceTaskContext.class);
-            OffsetStorageReader offsets = mock(OffsetStorageReader.class);
             when(context.offsetStorageReader()).thenReturn(offsets);
             when(offsets.offset(anyMap())).thenReturn(null);
             task.initialize(context);
@@ -162,10 +162,15 @@ class ReplicationStatusTaskTest {
             Future<SourceRecord> first = poller.submit(() -> h.task.poll().get(0));
             assertThat(scanning.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(scanFeedback.await(5, TimeUnit.SECONDS)).isTrue();
+            verify(h.sql, never()).close();
             verify(h.fixture.stream, never()).acknowledgeLsn(anyString());
             release.countDown();
             SourceRecord partial = first.get(5, TimeUnit.SECONDS);
             assertThat(partial.sourceOffset().get("gaussdb_snapshot_completed")).isEqualTo(false);
+            org.mockito.InOrder sqlLifecycle = inOrder(h.fixture.jdbc, h.fixture.stream, h.sql);
+            sqlLifecycle.verify(h.fixture.jdbc).cleanSignals(anyString(), anyString());
+            sqlLifecycle.verify(h.fixture.stream).detachSqlConnection();
+            sqlLifecycle.verify(h.sql).close();
 
             CountDownLatch publicationFeedback = new CountDownLatch(2);
             doAnswer(
@@ -311,5 +316,66 @@ class ReplicationStatusTaskTest {
         try (Stream<Path> paths = Files.list(scratch)) {
             assertThat(paths.count()).isZero();
         }
+    }
+
+    @Test
+    void incrementalAndRestoredInitialReleaseSqlAtStartupWithoutSnapshot() throws Exception {
+        for (boolean restoredInitial : new boolean[] {false, true}) {
+            try (Harness h = new Harness(true)) {
+                String start = ReplicationPosition.MULTI_PRIMARY_START;
+                if (restoredInitial) {
+                    SourceRecord checkpoint =
+                            CommittedBatch.snapshot(
+                                    h.fixture.config,
+                                    Collections.emptyList(),
+                                    InitialSnapshotTest.HIGH);
+                    when(h.offsets.offset(anyMap()))
+                            .thenReturn(new HashMap<>(checkpoint.sourceOffset()));
+                    start = InitialSnapshotTest.HIGH;
+                } else {
+                    h.options.put("scan.startup.mode", "incremental");
+                }
+                h.start();
+                org.mockito.InOrder order = inOrder(h.fixture.stream, h.sql);
+                order.verify(h.fixture.stream).initialize(start);
+                order.verify(h.fixture.stream).detachSqlConnection();
+                order.verify(h.sql).close();
+                h.tick.run();
+                h.task.poll(); // Framework's initial progress marker.
+                h.fixture.queue.add(
+                        Collections.singletonList(
+                                InitialSnapshotTest.insert(3, "live", InitialSnapshotTest.TAIL)));
+                SourceRecord live = h.task.poll().get(0);
+                assertThat(live.sourceOffset().get(CommittedBatch.POSITION))
+                        .isEqualTo(InitialSnapshotTest.TAIL);
+                h.task.commitRecord(live);
+                verify(h.fixture.stream).acknowledgeLsn(InitialSnapshotTest.TAIL);
+                verify(h.fixture.jdbc, never()).validateSignalTable();
+                verify(h.fixture.jdbc, never()).scan(anyList(), any(), any());
+                verify(h.sql, never()).createStatement();
+                verify(h.sql, never()).prepareStatement(anyString());
+                h.task.stop();
+                verify(h.sql, times(1)).close();
+            }
+        }
+    }
+
+    @Test
+    void sqlCloseFailureDiscardsPreparedSnapshotWithoutPublishingOrAck() throws Exception {
+        Harness h = new Harness(true);
+        try {
+            doThrow(new SQLException("SQL close failed", "08006")).when(h.sql).close();
+            h.start();
+            assertThatThrownBy(h.task::poll)
+                    .hasMessageContaining("sqlState=08006")
+                    .hasRootCauseMessage("SQL close failed");
+            assertScratchEmpty();
+            verify(h.fixture.stream).detachSqlConnection();
+            verify(h.fixture.stream, never()).acknowledgeLsn(anyString());
+        } finally {
+            h.close();
+        }
+        // Retained ownership after close failure allows shutdown to retry cleanup.
+        verify(h.sql, times(2)).close();
     }
 }

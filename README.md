@@ -62,6 +62,9 @@ mvn -Pflink-1.16 clean verify
 针对内网在等待 LOW 时出现的 `Socket is closed`，新增跨快照阶段的复制状态反馈、
 关闭流报错和阶段/SQLSTATE 诊断，见[LOW 等待断流分析](docs/HCS_LOW_SIGNAL_SOCKET_FAILURE.md)。
 该补丁修正已确认的保活与错误处理缺口，尚未确认该次真机断流的最初关闭原因。
+普通 SQL 会话在最后一次 SQL 操作后主动释放：initial 在表定义复核和信号清理后、发布前
+关闭；纯增量及 checkpoint 恢复在启动检查后关闭。持续读流、复制状态和 ACK 只用专用
+native COPY 连接，见[SQL 会话生命周期与 TLS 中断核查](docs/HCS_SQL_SESSION_LIFECYCLE.md)。
 若要在隔离测试 PDB 中验证在线快照与三段位点的边界，可运行
 [快照衔接集成实验](docs/HCS_SNAPSHOT_HANDOFF_VERIFICATION.md)。
 本实现要求服务端提供按事务排列的 BEGIN、非批量 JSON DML、COMMIT；未知消息或重叠事务使任务失败，

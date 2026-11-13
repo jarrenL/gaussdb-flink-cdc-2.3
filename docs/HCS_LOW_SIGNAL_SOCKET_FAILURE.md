@@ -1,5 +1,9 @@
 # 等待 LOW 时 Socket is closed：定位与修正
 
+后续内网又反馈全量后偶发 `08006 / SSL error: sslv3 alert unexpected message`。
+当前已进一步释放最后一次操作后的 SQL 会话，持续增量只保留 native 连接；该项与本文记录
+的 LOW 等待故障应分别定位，见[SQL 会话生命周期与 TLS 核查](HCS_SQL_SESSION_LIFECYCLE.md)。
+
 ## 内网证据与当前结论
 
 用户反馈运行的是含 DiskSnapshotStore 的 2026-11-13 分支源码包。确认

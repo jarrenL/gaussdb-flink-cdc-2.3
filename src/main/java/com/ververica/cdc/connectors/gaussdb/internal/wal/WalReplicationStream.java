@@ -58,7 +58,7 @@ public class WalReplicationStream {
     private static final Logger LOG = LoggerFactory.getLogger(WalReplicationStream.class);
 
     /** Ordinary SQL metadata session; never used as the native COPY transport. */
-    private final Connection connection;
+    private volatile Connection connection;
 
     private final String jdbcUrl;
     private final String username;
@@ -543,6 +543,27 @@ public class WalReplicationStream {
     }
 
     /**
+     * The caller owns and closes the SQL session after startup/snapshot SQL is finished. Native
+     * streaming, feedback and checkpoint ACK need only the dedicated COPY connection. SQL helpers
+     * deliberately fail after detachment; they must never execute a query on an active COPY stream.
+     */
+    public synchronized void detachSqlConnection() throws SQLException {
+        if (!hcsMultiPrimary || !running || !useReplicationApi || replicationStream == null)
+            throw new SQLException(
+                    "SQL session can only be detached from an initialized HCS native stream",
+                    "55000");
+        connection = null;
+    }
+
+    private Connection requireSqlConnection() throws SQLException {
+        Connection sql = connection;
+        if (sql == null)
+            throw new SQLException(
+                    "SQL session is detached; use a separate administrative connection", "55000");
+        return sql;
+    }
+
+    /**
      * Read changes using JDBC replication API (streaming mode).
      *
      * <p>Uses readPending() to read available batches from the replication stream. After each
@@ -952,7 +973,7 @@ public class WalReplicationStream {
                         "SELECT location AS lsn, xid, data FROM pg_logical_slot_peek_changes(?, %s, ?, %s)",
                         "NULL", optionBuilder);
 
-        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+        try (PreparedStatement stmt = requireSqlConnection().prepareStatement(sql)) {
             stmt.setFetchSize(fetchSize);
             stmt.setString(1, slotName);
             stmt.setInt(2, queryLimit);
@@ -1001,13 +1022,14 @@ public class WalReplicationStream {
         if (targetLsn == null) {
             return;
         }
+        Connection sqlConnection = requireSqlConnection();
         // Try GaussDB compatible function first, then PostgreSQL function
         String[] sqlCandidates = {
             "SELECT pg_replication_slot_advance(?, ?)", "SELECT pg_logical_slot_advance(?, ?)"
         };
         SQLException lastFailure = null;
         for (String sql : sqlCandidates) {
-            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            try (PreparedStatement stmt = sqlConnection.prepareStatement(sql)) {
                 stmt.setString(1, slotName);
                 stmt.setString(2, targetLsn);
                 stmt.execute();
@@ -1321,7 +1343,7 @@ public class WalReplicationStream {
                 hcsMultiPrimary
                         ? "SELECT 1 FROM gs_logical_replication_slot WHERE name = ?"
                         : "SELECT 1 FROM pg_get_replication_slots() WHERE slot_name = ?";
-        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+        try (PreparedStatement stmt = requireSqlConnection().prepareStatement(sql)) {
             stmt.setString(1, slotName);
             try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next();
@@ -1337,7 +1359,7 @@ public class WalReplicationStream {
                 cnDecode
                         ? "SELECT * FROM pg_create_logical_replication_slot(?, ?, 1)"
                         : "SELECT * FROM pg_create_logical_replication_slot(?, ?)";
-        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+        try (PreparedStatement stmt = requireSqlConnection().prepareStatement(sql)) {
             stmt.setString(1, slotName);
             stmt.setString(2, pluginName);
             if (stmt.execute()) {
@@ -1365,12 +1387,13 @@ public class WalReplicationStream {
      * method tries both functions for compatibility.
      */
     private String getCurrentLsn() throws SQLException {
+        Connection sqlConnection = requireSqlConnection();
         // GaussDB compatible function (preferred)
         String[] sqlCandidates = {
             "SELECT pg_current_xlog_location()", "SELECT pg_current_wal_lsn()"
         };
         for (String sql : sqlCandidates) {
-            try (PreparedStatement stmt = connection.prepareStatement(sql);
+            try (PreparedStatement stmt = sqlConnection.prepareStatement(sql);
                     ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
                     String result = rs.getString(1);
@@ -1438,7 +1461,7 @@ public class WalReplicationStream {
         LOG.info("Dropping replication slot: {}", slotName);
 
         String sql = "SELECT pg_drop_replication_slot(?)";
-        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+        try (PreparedStatement stmt = requireSqlConnection().prepareStatement(sql)) {
             stmt.setString(1, slotName);
             stmt.execute();
         }

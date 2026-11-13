@@ -80,9 +80,10 @@ public class GaussDBSourceTask extends SourceTask {
             stream = createStream(config, sqlConnection);
             stream.setHcsMultiPrimary(true, config.replicationAuthentication());
             stream.initialize(lastRead);
+            snapshotPending = config.initialSnapshot() && offset == null;
+            if (!snapshotPending) releaseSqlConnection();
             running = true;
             publication = null;
-            snapshotPending = config.initialSnapshot() && offset == null;
             initialProgress = true;
             startStatusUpdates();
         } catch (Exception e) {
@@ -117,6 +118,17 @@ public class GaussDBSourceTask extends SourceTask {
 
     protected JdbcSnapshotAccess createSnapshotAccess(GaussDBConfig settings, Connection sql) {
         return new JdbcSnapshotAccess(sql, settings);
+    }
+
+    private synchronized void releaseSqlConnection() throws SQLException {
+        if (sqlConnection == null) return;
+        // Native COPY has its own connection. Detach the SQL reference rather than redirecting
+        // administrative queries onto a connection that is busy with COPY BOTH.
+        stream.detachSqlConnection();
+        sqlConnection.close();
+        sqlConnection = null;
+        LOG.info(
+                "HCS SQL session released after its final operation; using native replication only");
     }
 
     private void startStatusUpdates() {
@@ -194,6 +206,9 @@ public class GaussDBSourceTask extends SourceTask {
                     publication = current;
                     snapshotPending = false;
                     initialProgress = false;
+                    // prepare() has completed schema verification and signal cleanup. Releasing
+                    // here also avoids leaving SQL idle during potentially slow publication.
+                    releaseSqlConnection();
                 }
                 if (!isRunningAndHealthy() || Thread.currentThread().isInterrupted())
                     throw new InterruptedException("Initial snapshot publication cancelled");
@@ -324,11 +339,13 @@ public class GaussDBSourceTask extends SourceTask {
                 LOG.warn("Could not clean snapshot scratch state", e);
             }
         if (stream != null) stream.close();
-        if (sqlConnection != null)
+        Connection sql = sqlConnection;
+        sqlConnection = null;
+        if (sql != null)
             try {
-                sqlConnection.close();
-            } catch (Exception ignored) {
-                /* closing */
+                sql.close();
+            } catch (Exception failure) {
+                LOG.warn("Could not close HCS SQL session during task shutdown", failure);
             }
     }
 }

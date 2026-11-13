@@ -429,6 +429,56 @@ class HcsMultiPrimaryProtocolTest {
     }
 
     @Test
+    void nativeReadFeedbackAndAckWorkAfterSqlDetachAndCloseWithoutCopyQueries() throws Exception {
+        BaseConnection sql = tenantConnection(true);
+        BaseConnection dedicated = gaussdbReplicationConnection();
+        ReplicationProtocol protocol = mock(ReplicationProtocol.class);
+        Session session = new Session(ReplicationPosition.MULTI_PRIMARY_START);
+        when(dedicated.getReplicationProtocol()).thenReturn(protocol);
+        when(protocol.startLogical(any())).thenReturn(session.nativeStream);
+        RecordingDriver driver = new RecordingDriver(dedicated);
+        WalReplicationStream wal = connector(sql, true);
+        DriverManager.registerDriver(driver);
+        try {
+            wal.initialize(ReplicationPosition.MULTI_PRIMARY_START);
+            wal.detachSqlConnection();
+            sql.close(); // Caller, not WalReplicationStream, owns SQL connection shutdown.
+            session.packet("0/63,0/1,0/100", "BEGIN CSN: 99");
+            session.packet(
+                    "0/63,0/1,0/200",
+                    "{\"table_name\":\"public.t\",\"op_type\":\"INSERT\",\"columns_name\":[\"id\"],\"columns_type\":[\"integer\"],\"columns_val\":[\"1\"]}");
+            session.packet(FIRST, "COMMIT XID: 1");
+            assertThat(wal.readChanges(100)).hasSize(1);
+            wal.sendStatus();
+            assertThat(session.applied()).containsExactly(0, 0, 0);
+            assertThat(session.flushed()).containsExactly(0, 0, 0);
+            wal.acknowledgeLsn(FIRST);
+            assertThat(session.applied()).containsExactly(100, 2, 4096);
+            assertThat(session.flushed()).containsExactly(100, 2, 4096);
+            assertThatThrownBy(wal::dropSlot).hasMessageContaining("SQL session is detached");
+            assertThatThrownBy(wal::getCurrentLsnPosition)
+                    .hasMessageContaining("SQL session is detached");
+            verify(sql, org.mockito.Mockito.times(1)).prepareStatement(any(String.class));
+            verify(dedicated, never()).prepareStatement(any(String.class));
+            verify(dedicated, never()).createStatement();
+            wal.close();
+            verify(sql, org.mockito.Mockito.times(1)).close();
+            verify(dedicated).close();
+        } finally {
+            DriverManager.deregisterDriver(driver);
+            wal.close();
+        }
+    }
+
+    @Test
+    void sqlSessionCannotBeDetachedBeforeNativeInitialization() {
+        WalReplicationStream wal = connector(mock(Connection.class), true);
+        assertThatThrownBy(wal::detachSqlConnection)
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("initialized HCS native stream");
+    }
+
+    @Test
     void tenantStreamStartFailureClosesDedicatedConnectionWithoutSqlFallback() throws Exception {
         BaseConnection sql = tenantConnection(true);
         com.huawei.gaussdb.jdbc.core.BaseConnection dedicated = gaussdbReplicationConnection();

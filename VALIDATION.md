@@ -1,5 +1,34 @@
 # 验证记录
 
+## 2026-11-13：最后一次 SQL 后释放会话，持续增量只保留 native 连接
+
+基于 `4be0c5e`。内网新增反馈为全量后高并发下偶发 `08006 / sslv3 alert unexpected message`，
+恢复后该次核对未发现数据丢失。源码确认此前持续持有已无后续用途的 SQL 会话；本次消除
+此生命周期问题，不将“CMS 跨连接 SSL session 串扰”作为已复现的根因。
+
+initial 在 prepare 完成表定义复核和信号清理后、首批发布前 detach 并关闭 SQL；纯增量
+与 completed initial checkpoint 恢复在 native 启动后即释放 SQL。定时反馈不增加 SELECT 1，
+管理辅助 SQL 不重定向到 COPY 连接。detach 后管理入口明确失败，native 读流、状态反馈、
+checkpoint ACK 保持原会话和原三段位点。关闭失败会报错、清理未发布快照，并保留 shutdown
+再次清理 SQL 的机会；不重建复制流或提前确认日志。
+
+执行 `scripts/verify-matrix.sh`，Flink 1.13.6、1.14.6、1.15.4、1.16.3 每版通过
+169 项测试，失败/错误/跳过均为 0，编译和打包均通过。新增/增强验证覆盖清理信号 → detach
+→ SQL.close → 首批发布的顺序，扫描期间不关闭 SQL，纯增量/恢复不重扫且启动后释放，
+SQL.close 失败不发布/ACK 并清理磁盘。真实 507 驱动配合受控 CopyDual，在 SQL 关闭后仍能
+读取完整事务、发送反馈及 ACK，native 连接未执行任何普通 Statement；释放后的 dropSlot /
+getCurrentLsnPosition 明确失败，不静默返回 0/0。既有尾部事务、持续增量和官方框架恢复测试通过。
+
+`mvn spotless:check`、`git diff --check` 通过。包内检查确认 detach API 存在，修改的生产
+类保持 Java 8 字节码，SQL Factory SPI 保留，未打入 Flink streaming 引擎类。
+Java 8 执行最终包 `HcsConnectionDiagnostics --driver-only`，结果
+`DRIVER_ONLY_COMPLETE_NO_DATABASE_CONNECTION`，未连接数据库。
+
+最终 Flink 1.16.3 包大小 35735137 字节，SHA-256：
+`0de17aac3ad9b5ff091a5e7e2d2fe64be26973e6584c6edbf6946a32db1f11d1`。
+没有目标 HCS/CMS/TLS 压测结论，仍需内网验证原偶发中断是否消失。
+[调用链核查、实现与复测步骤](docs/HCS_SQL_SESSION_LIFECYCLE.md)。
+
 ## 2026-11-13：等待 LOW 断流核查、定时状态反馈与阶段诊断
 
 基于落盘版本 `f56d629`。内网补充将故障从“全量结束后切增量”修正为“prepare 中等待
