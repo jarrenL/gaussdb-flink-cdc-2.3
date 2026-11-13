@@ -35,9 +35,12 @@ import java.util.stream.Collectors;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.kafka.connect.source.SourceTask;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Reads native HCS transactions; only CDC's completed checkpoints acknowledge the slot. */
 public class GaussDBSourceTask extends SourceTask {
+    private static final Logger LOG = LoggerFactory.getLogger(GaussDBSourceTask.class);
     private GaussDBConfig config;
     private Connection connection;
     private WalReplicationStream stream;
@@ -130,13 +133,16 @@ public class GaussDBSourceTask extends SourceTask {
                 SourceRecord record = current.next();
                 if (Boolean.TRUE.equals(record.sourceOffset().get("gaussdb_snapshot_completed")))
                     lastRead = requirePosition(record.sourceOffset());
-                if (!current.hasNext()) publication = null;
+                if (!current.hasNext()) {
+                    current.close();
+                    publication = null;
+                }
                 return Collections.singletonList(record);
             } catch (InterruptedException e) {
-                publication = null;
+                discardPublication(e);
                 throw e;
             } catch (Exception e) {
-                publication = null;
+                discardPublication(e);
                 throw new ConnectException(
                         "HCS initial snapshot failed; restart from the completed Flink checkpoint",
                         e);
@@ -191,6 +197,17 @@ public class GaussDBSourceTask extends SourceTask {
         }
     }
 
+    private void discardPublication(Throwable failure) {
+        SnapshotPublication pending = publication;
+        publication = null;
+        if (pending != null)
+            try {
+                pending.close();
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+    }
+
     private static String requirePosition(Map<String, ?> offset) {
         Object position = offset.get(CommittedBatch.POSITION);
         if (!(position instanceof String))
@@ -201,7 +218,14 @@ public class GaussDBSourceTask extends SourceTask {
     @Override
     public synchronized void stop() {
         running = false;
+        SnapshotPublication pending = publication;
         publication = null;
+        if (pending != null)
+            try {
+                pending.close();
+            } catch (RuntimeException e) {
+                LOG.warn("Could not clean snapshot scratch state", e);
+            }
         if (stream != null) stream.close();
         if (connection != null)
             try {

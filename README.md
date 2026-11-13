@@ -56,6 +56,9 @@ mvn -Pflink-1.16 clean verify
 [HCS 首次全量与增量衔接](docs/HCS_INITIAL_SNAPSHOT_HANDOFF.md)。
 通用 Source 与 DRS 迁移模型的区别、去掉信号表的候选路线，以及新增的只读跨会话快照导入探针，
 见[Source 方案与快照探针](docs/HCS_GENERIC_SOURCE_STRATEGY.md)。
+结合 DRS 的日志保留/进度管理与通用 Source 重叠合并的当前实现、丢失/重复风险及落盘限制，
+见[组合方案与落盘合并](docs/HCS_HYBRID_SNAPSHOT.md)。落盘不提供新的读取一致性保证，
+也不等于已经实现分块 checkpoint。
 若要在隔离测试 PDB 中验证在线快照与三段位点的边界，可运行
 [快照衔接集成实验](docs/HCS_SNAPSHOT_HANDOFF_VERIFICATION.md)。
 本实现要求服务端提供按事务排列的 BEGIN、非批量 JSON DML、COMMIT；未知消息或重叠事务使任务失败，
@@ -129,8 +132,14 @@ JSON 模式下，UPDATE/DELETE 的 `before` 只包含 WAL 实际提供的旧列�
 | `scan.snapshot.signal-table` | 无 | initial 必填，专用 `schema.table`；连接器在此写入并清理 LOW/HIGH 信号 |
 | `scan.snapshot.allow-unverified-consistency` | `false` | 仅隔离实验允许设 true；不提供一致性保证。首次 initial 默认在连接和建槽前失败 |
 | `scan.slot.create` | `true` | 仅 initial 首次启动可创建缺失的槽；恢复时缺槽始终失败 |
-| `scan.snapshot.max.rows` | `100000` | 全量合并缓冲区行数上限 |
-| `scan.snapshot.max.bytes` | `67108864` | 全量合并缓冲区估算字节上限，并非 JVM 总内存上限 |
+| `scan.snapshot.storage` | `disk` | `disk` 落盘合并或 `memory` 内存合并；均先合并再输出 |
+| `scan.snapshot.spill-dir` | `java.io.tmpdir` | 已存在且可写的临时文件父目录；各 TaskManager 须配置本地路径 |
+| `scan.snapshot.disk.cache.mb` | `16` | MVStore 读缓存目标 MiB，不是 JVM/RSS 上限 |
+| `scan.snapshot.disk.write-buffer.bytes` | `1048576` | 落盘合并提交的编码字节目标，同时最多每 1000 次修改提交；不是 Flink checkpoint |
+| `scan.snapshot.disk.max.row.bytes` | `16777216` | 单行估算/编码大小上限；超限失败 |
+| `scan.snapshot.disk.max.bytes` | `10737418240` | 临时合并存储逻辑数据/物理文件配额，默认 10 GiB；提交后检查物理大小，可能短暂超出 |
+| `scan.snapshot.max.rows` | `100000` | 仅 memory 模式的全量行数上限 |
+| `scan.snapshot.max.bytes` | `67108864` | 仅 memory 模式的估算字节上限，并非 JVM 总内存上限 |
 | `scan.snapshot.fetch.size` | `1000` | JDBC 扫描游标 fetch 大小，并非断点分块大小 |
 | `scan.snapshot.batch.rows` | `1000` | 合并完成后的全量输出批次行数上限 |
 | `scan.snapshot.batch.bytes` | `1048576` | 全量输出每批估算字节目标，单个大行独占一批 |

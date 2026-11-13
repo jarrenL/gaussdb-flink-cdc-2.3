@@ -27,12 +27,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Bounded first implementation: merge the entire initial image before publishing any row. */
-public final class SnapshotBackfillBuffer {
+/** Merge the initial image before publication, using bounded memory or disposable disk storage. */
+public final class SnapshotBackfillBuffer implements AutoCloseable {
     private final GaussDBConfig config;
     private final Map<String, SnapshotTable> tables = new LinkedHashMap<>();
     private final Map<List<String>, WalChange> rows = new LinkedHashMap<>();
     private long estimatedBytes;
+    private final DiskSnapshotStore disk;
+    private boolean closed;
 
     public SnapshotBackfillBuffer(GaussDBConfig config, List<SnapshotTable> definitions) {
         this.config = config;
@@ -41,18 +43,24 @@ public final class SnapshotBackfillBuffer {
                 throw new IllegalArgumentException("Duplicate snapshot table");
         if (tables.isEmpty())
             throw new IllegalArgumentException("No tables matched the initial snapshot selection");
+        disk =
+                "disk".equals(config.get("scan.snapshot.storage", "disk"))
+                        ? new DiskSnapshotStore(config)
+                        : null;
     }
 
-    public void addSnapshotRow(WalChange row) {
+    public synchronized void addSnapshotRow(WalChange row) {
+        requireOpen();
         SnapshotTable table = requireTable(row);
         table.requireFullImage(row.getAfterColumns());
         List<String> key = table.key(row.getAfterColumns());
-        if (rows.containsKey(key))
+        if (disk == null ? rows.containsKey(key) : disk.contains(key))
             throw new IllegalArgumentException("Duplicate primary key in JDBC snapshot");
         put(key, row);
     }
 
-    public void apply(WalChange change) {
+    public synchronized void apply(WalChange change) {
+        requireOpen();
         if (!config.matches(change.getSchema(), change.getTable())) return;
         SnapshotTable table = requireTable(change);
         switch (change.getType()) {
@@ -75,7 +83,10 @@ public final class SnapshotBackfillBuffer {
         }
     }
 
-    public List<WalChange> finish(String highPosition) {
+    public synchronized List<WalChange> finish(String highPosition) {
+        requireOpen();
+        if (disk != null)
+            throw new IllegalStateException("Disk snapshots must be drained in bounded batches");
         List<WalChange> output = new ArrayList<>();
         for (WalChange row : rows.values())
             output.add(
@@ -89,9 +100,11 @@ public final class SnapshotBackfillBuffer {
     }
 
     /** Drain the merged image after HIGH. No scan/backfill row is published before that point. */
-    public List<WalChange> drain(String highPosition, int maxRows, int maxBytes) {
+    public synchronized List<WalChange> drain(String highPosition, int maxRows, int maxBytes) {
+        requireOpen();
         if (maxRows <= 0 || maxBytes <= 0)
             throw new IllegalArgumentException("Invalid snapshot batch limits");
+        if (disk != null) return disk.drain(highPosition, maxRows, maxBytes);
         List<WalChange> output = new ArrayList<>();
         long bytes = 0;
         Iterator<WalChange> iterator = rows.values().iterator();
@@ -114,8 +127,26 @@ public final class SnapshotBackfillBuffer {
         return output;
     }
 
-    public boolean isEmpty() {
-        return rows.isEmpty();
+    public synchronized boolean isEmpty() {
+        requireOpen();
+        return disk == null ? rows.isEmpty() : disk.isEmpty();
+    }
+
+    public synchronized void seal() {
+        requireOpen();
+        if (disk != null) disk.flush();
+    }
+
+    @Override
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        rows.clear();
+        if (disk != null) disk.close();
+    }
+
+    private void requireOpen() {
+        if (closed) throw new IllegalStateException("Snapshot buffer is closed");
     }
 
     private SnapshotTable requireTable(WalChange row) {
@@ -127,6 +158,10 @@ public final class SnapshotBackfillBuffer {
     }
 
     private void remove(List<String> key) {
+        if (disk != null) {
+            disk.remove(key);
+            return;
+        }
         WalChange previous = rows.remove(key);
         if (previous != null) estimatedBytes -= size(previous);
     }
@@ -140,6 +175,10 @@ public final class SnapshotBackfillBuffer {
                         value.getSchema(),
                         value.getTable(),
                         new ArrayList<>(value.getAfterColumns()));
+        if (disk != null) {
+            disk.put(key, row);
+            return;
+        }
         remove(key);
         rows.put(key, row);
         estimatedBytes += size(row);
@@ -149,7 +188,7 @@ public final class SnapshotBackfillBuffer {
                     "Initial snapshot buffer limit exceeded; no snapshot rows were published. Reduce the table selection or raise the explicit snapshot limits");
     }
 
-    private static long size(WalChange row) {
+    static long size(WalChange row) {
         long size = 256L + 2L * (row.getSchema().length() + row.getTable().length());
         for (ColumnValue column : row.getAfterColumns())
             size +=

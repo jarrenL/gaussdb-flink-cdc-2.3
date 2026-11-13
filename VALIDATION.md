@@ -1,5 +1,33 @@
 # 验证记录
 
+## 2026-11-13：组合方案第一步，源端合并默认落盘
+
+保持通用 Source 输出契约，沿用先建槽、完整三段位点恢复和 completed checkpoint ACK，
+将整份全量/区间 WAL 的主键合并新增为默认 disk 模式；memory 模式保留原有限额。
+未改成只发逐表 CSN 过滤事件并要求目标 Applier 去重。LOW/HIGH 实验路径仍在，首次
+initial 默认关闭；落盘不解决跨写节点读取可见性，也不提供分块 checkpoint。
+
+执行 `scripts/verify-matrix.sh`，Flink 1.13.6、1.14.6、1.15.4、1.16.3 每版均通过
+156 项测试，失败/错误/跳过均为 0，编译和打包均成功。新增测试核对磁盘与内存合并结果、
+主键变更、跨表键、NULL、超过 64 KiB 的中文/emoji/NUL、磁盘配额、行限制、HIGH 超时、
+重复扫描主键及目录清理。正常取消部分全量输出后清理磁盘，不允许其不完整 offset ACK。
+官方 CDC 2.3 的跨全量输出批次 checkpoint 门闩测试改用真实磁盘存储，仍不能保存半份全量。
+
+最终 Flink 1.16.3 包在 Java 8（Zulu 1.8.0_482）使用 `-Xmx64m` 执行独立检查，
+不连接数据库：50000 行，每行 1024 个中文字符，完整分批读回并核对内容/数量/临时文件清理。
+此次输出为 `PACKAGED_DISK_MERGE_PASS rows=50000 file_bytes=121769984 max_heap=59768832`。
+文件约 116 MiB，大于该最大 Java 堆；这验证整份合并数据无需驻留 Java 堆，不是 RSS 上限证明。
+
+`mvn spotless:check` 通过。包内检查确认 MVStore 与 DiskSnapshotStore 为 Java 8 字节码，
+MVStore 的 `org.h2` 已迁移包名，未包含 H2 JDBC Driver 或 Flink streaming 引擎类，保留
+官方 CDC Source 及 SQL Factory SPI。Shade 升级至 3.6.0，以处理 MVStore 的可选多版本类。
+最终包大小 35732136 字节，SHA-256：
+`e9de4c5ea40bb1fe70eee9d05ffb4ef11bce9b15e6445b6085a9c92bdae5d97e`。
+
+临时文件不是 checkpoint；强杀可能残留，未完成全量失败仍全部重做。未运行目标 HCS
+多节点、读取一致性、长事务和端到端 sink 验收，没有真机无丢失结论。
+[组合方案、资源限制与尚未解决项](docs/HCS_HYBRID_SNAPSHOT.md)。以下保留历史验证记录。
+
 ## 2026-11-13：保持通用 Source，新增只读跨会话导入探针
 
 用户明确选择保持可接聚合/计数的通用 Flink CDC Source。未将 handoff 改为依赖目标

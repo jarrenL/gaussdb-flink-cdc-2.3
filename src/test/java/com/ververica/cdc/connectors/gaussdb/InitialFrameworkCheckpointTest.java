@@ -141,7 +141,8 @@ class InitialFrameworkCheckpointTest {
 
     @Test
     @Timeout(40)
-    void checkpointCannotPassBetweenSnapshotBatches() throws Exception {
+    void checkpointCannotPassBetweenSnapshotBatches(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path scratch) throws Exception {
         FrameworkCheckpointTest.session = new FrameworkCheckpointTest.Session();
         FrameworkCheckpointTest.Session session = FrameworkCheckpointTest.session;
         session.pauseAfterFirstPoll = true;
@@ -186,6 +187,9 @@ class InitialFrameworkCheckpointTest {
                 .scan(anyList(), any(), any());
         Map<String, String> options = InitialSnapshotTest.options();
         options.put("scan.snapshot.batch.rows", "1");
+        options.put("scan.snapshot.storage", "disk");
+        options.put("scan.snapshot.spill-dir", scratch.toString());
+        options.put("scan.snapshot.disk.cache.mb", "2");
         FrameworkCheckpointTest.Harness h =
                 new FrameworkCheckpointTest.Harness(
                         null, false, new GaussDBConfig(options).engineProperties());
@@ -211,6 +215,10 @@ class InitialFrameworkCheckpointTest {
         } finally {
             session.continuePoll.countDown();
             h.close();
+        }
+        try (java.util.stream.Stream<java.nio.file.Path> files =
+                java.nio.file.Files.list(scratch)) {
+            assertThat(files.count()).isZero();
         }
     }
 }

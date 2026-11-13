@@ -60,6 +60,13 @@ public final class GaussDBConfig implements Serializable {
         positiveInt("scan.snapshot.fetch.size", 1000);
         positiveInt("scan.snapshot.batch.rows", 1000);
         positiveInt("scan.snapshot.batch.bytes", 1048576);
+        if (!java.util.Arrays.asList("memory", "disk")
+                .contains(get("scan.snapshot.storage", "disk")))
+            throw new IllegalArgumentException("scan.snapshot.storage must be memory or disk");
+        positiveInt("scan.snapshot.disk.cache.mb", 16);
+        positiveInt("scan.snapshot.disk.write-buffer.bytes", 1048576);
+        positiveInt("scan.snapshot.disk.max.row.bytes", 16777216);
+        positiveLong("scan.snapshot.disk.max.bytes", 10737418240L);
         positiveInt("scan.snapshot.timeout.seconds", 300);
         if (!java.util.Arrays.asList("true", "false").contains(get("scan.slot.create", "true")))
             throw new IllegalArgumentException("scan.slot.create must be true or false");
@@ -104,6 +111,17 @@ public final class GaussDBConfig implements Serializable {
             throw new IllegalStateException(e);
         }
         return "jdbc:gaussdb://" + required("hcs.cms-endpoints") + "/" + database;
+    }
+
+    public long positiveLong(String key, long fallback) {
+        long value;
+        try {
+            value = Long.parseLong(get(key, String.valueOf(fallback)));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid integer option: " + key);
+        }
+        if (value <= 0) throw new IllegalArgumentException(key + " must be positive");
+        return value;
     }
 
     public Properties authentication() {

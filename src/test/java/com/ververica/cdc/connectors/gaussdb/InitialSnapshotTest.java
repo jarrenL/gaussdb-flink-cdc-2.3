@@ -45,6 +45,7 @@ class InitialSnapshotTest {
         settings.put("scan.startup.mode", "initial");
         settings.put("scan.snapshot.signal-table", "cdc_meta.signals");
         settings.put("scan.snapshot.allow-unverified-consistency", "true");
+        settings.put("scan.snapshot.storage", "memory");
         return settings;
     }
 

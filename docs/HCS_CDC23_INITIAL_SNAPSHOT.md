@@ -46,8 +46,11 @@ DDL 由管理员在目标版本执行，连接器不会自动建信号表、建 
 'scan.startup.mode' = 'initial',
 'scan.snapshot.signal-table' = 'cdc_meta.flink_snapshot_signal',
 'scan.slot.create' = 'true',
-'scan.snapshot.max.rows' = '100000',
-'scan.snapshot.max.bytes' = '67108864',
+'scan.snapshot.storage' = 'disk',
+'scan.snapshot.disk.cache.mb' = '16',
+'scan.snapshot.disk.write-buffer.bytes' = '1048576',
+'scan.snapshot.disk.max.row.bytes' = '16777216',
+'scan.snapshot.disk.max.bytes' = '10737418240',
 'scan.snapshot.fetch.size' = '1000',
 'scan.snapshot.batch.rows' = '1000',
 'scan.snapshot.batch.bytes' = '1048576',
@@ -68,7 +71,7 @@ DDL 由管理员在目标版本执行，连接器不会自动建信号表、建 
 验证专用槽（首次缺槽则建槽）→ 成功启动原生多写复制流
     → 验证表定义/主键/信号表
     → 提交 LOW 信号，在复制流中观察其完整提交与三段位点
-    → JDBC 游标扫描所选表，全部先放入有界内存缓冲区
+    → JDBC 游标扫描所选表，先放入临时落盘合并存储（也可选有界内存）
     → 扫描结束后提交 HIGH 信号
     → 读取并按主键合并 (LOW, HIGH] 的所有完整事务
     → 再次核对表集合、关系 OID、列类型和主键
@@ -97,7 +100,7 @@ offset，失败后重新执行整个全量；首版不从半张表或分块游�
 
 合并完成后按 `scan.snapshot.batch.rows`（默认 1000 行）与
 `scan.snapshot.batch.bytes`（默认约 1 MiB 估算数据）分批输出，并释放已输出的缓冲行。
-单行不可拆分，大于字节目标的单行独占一批，仍受全量缓冲总上限约束。
+单行不可拆分，大于字节目标的单行独占一批，仍受所选存储模式的行大小/总配额约束。
 首批和中间批的内部 `source.snapshot=true`、`gaussdb_snapshot_completed=false`；
 只有最后一批为 `source.snapshot=last`、完成标记为 true。snapshot 字段使用 Debezium 的
 `io.debezium.data.Enum` 逻辑类型，普通 STRING 会被 CDC 2.3 的快照识别逻辑忽略。
@@ -107,6 +110,9 @@ offset，失败后重新执行整个全量；首版不从半张表或分块游�
 checkpoint 回调通过 `SourceTask.commitRecord` 按顺序调用 native stream 的
 `setAppliedLSN`、`setFlushedLSN`、`forceUpdateStatus`；调用失败会报错，不记为 ACK 成功。
 这是输出分批，不是分块 checkpoint；输出时间长时仍要相应设置 Flink checkpoint 超时。
+临时落盘文件不进入 checkpoint，不能作为恢复依据；正常结束、超时、异常或取消后清理本次
+拥有的目录。进程被强杀时可能残留目录，管理员应在确认无运行任务引用后清理，不能复用。
+本地落盘提交不触发复制槽 ACK；首次全量未完成时重做整个全量。
 
 恢复时同时验证租户/数据库/槽、三段位点、全量完成标记与表选择/信号表配置。将旧增量
 checkpoint 切换成 initial 会被拒绝，避免误跳过全量；改变表选择也需要新作业和完整初始化。
@@ -137,10 +143,13 @@ checkpoint 切换成 initial 会被拒绝，避免误跳过全量；改变表选
 - 区间内 INSERT/UPDATE 的 after 必须包含全部业务列，UPDATE/DELETE 必须包含原主键。
   缺失镜像、列类型变化、已观察到的位点乱序均报错。后续行模式还要求完整 before 镜像，
   JSON 增量可保持实际提供的部分 before。
-- 初始全量是**整份有界内存合并**，不是大表分块快照。默认最多 100000 行和约 64 MiB
-  缓冲区估算数据；输出分批降低 Kafka Struct、JSON 序列化和队列的额外内存峰值，
-  未取消总上限。超限仍在发布前失败，尚未实现大表分块或磁盘溢写。
-  不应把 max.bytes 当成 JVM 总内存保证。大事务还有既有 native 解码缓冲压力。
+- 初始全量仍是**整份合并后发布**，不是大表分块快照。默认 `scan.snapshot.storage=disk`，
+  用私有 MVStore 文件保存最终行镜像；不受 memory 模式的 100000 行/64 MiB 总量限制，
+  但默认有 10 GiB 磁盘配额、16 MiB 单行估算/编码限制。存储读缓存目标默认 16 MiB，
+  编码修改默认每 1 MiB 或 1000 次提交，缓存参数不等于总堆/RSS 保证。磁盘不足或超配额
+  会失败，不跳行。输出期间文件修改同样可能失败，需按 checkpoint 恢复。
+  可选 `memory` 保留原有行数/估算字节上限。两种模式均未实现分块 checkpoint；
+  大事务还有 native 解码缓冲压力。详细资源和故障语义见[组合方案](HCS_HYBRID_SNAPSHOT.md)。
 - 必须暂停表结构变更和 TRUNCATE。前后目录核对能发现部分结构变化，不能检测所有 DDL。
   信号须能在同一复制流中出现，扫描连接须具备提交后的全局可见性，复制流须提供跨写节点
   有序、完整的提交事务；槽须保留扫描期间及未完成 checkpoint 所需的日志。

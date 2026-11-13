@@ -77,8 +77,9 @@ HIGH 后的 trailing 事务等所有全量批结束后才发送。
 HIGH 和全量完成标记，再由 completed checkpoint 执行 ACK。
 
 `scan.snapshot.batch.rows` 与 `scan.snapshot.batch.bytes` 用于输出批次的行数/估算字节控制。
-总缓冲区仍保留行数与内存估算上限；这降低了全量序列化/输出的瞬时峰值，**没有实现大表
-分块、磁盘溢写或分块恢复**。总缓冲区超限仍在发布前失败。
+分批发布最初仍保留总行数与内存估算上限。后续[组合方案](HCS_HYBRID_SNAPSHOT.md)
+增加默认 disk 存储，整份合并不再必须驻留内存；memory 模式保留旧上限。
+两者均未实现大表分块 checkpoint，落盘文件不是恢复状态。
 
 ## 指南中需要修正的结论
 
@@ -127,7 +128,7 @@ DRS Applier 的 delete+insert、UPDATE 0 行补 before、DELETE 0 行忽略，�
 | 指南条目 | 处理 |
 | --- | --- |
 | P0 applied/flushed ACK | 已补 applied 并增加真实驱动报文及失败测试 |
-| P0 分批发布与内存保护 | 已安全分批输出，保留总缓冲限制；大表分块/落盘未实现 |
+| P0 分批发布与内存保护 | 已安全分批输出，新增默认落盘合并及磁盘配额；分块 checkpoint 未实现 |
 | P0 目标 INSERT 加 UPSERT | 属于 sink/目标迁移层，不在 Source 构造目标 SQL |
 | P1 无主键锁表 | 当前在读取前拒绝无主键表；锁表也不能直接为主键合并补出行身份 |
 | P1 COPY TO STDOUT | 后续性能路径，需确认 HCS 租户连接 COPY API 与类型解码，暂用 JDBC 游标 |

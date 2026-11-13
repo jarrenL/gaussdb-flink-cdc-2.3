@@ -65,40 +65,53 @@ public final class InitialSnapshot {
         jdbc.validateSignalTable();
         List<SnapshotTable> tables = jdbc.discoverTables();
         SnapshotBackfillBuffer buffer = new SnapshotBackfillBuffer(config, tables);
-        LOG.info(
-                "Starting HCS initial snapshot for {} table(s); waiting for LOW signal",
-                tables.size());
-        String low = "flink_low_" + UUID.randomUUID();
-        String high = "flink_high_" + UUID.randomUUID();
-        checkRunning();
-        jdbc.writeSignal(low);
-        Boundary before = awaitSignal(low, null, Collections.emptyList());
-        LOG.info("HCS initial snapshot LOW committed at {}; starting JDBC scan", before.position);
-        // Do not apply interval WAL before all scan rows are loaded: an older JDBC image could
-        // otherwise overwrite a newer WAL value. The slot is not acknowledged during the scan.
-        jdbc.scan(
-                tables,
-                row -> {
-                    checkDeadline();
-                    buffer.addSnapshotRow(row);
-                },
-                running);
-        checkRunning();
-        jdbc.writeSignal(high);
-        LOG.info("HCS JDBC scan completed; waiting for HIGH and backfilling interval WAL");
-        Boundary after = awaitSignal(high, buffer, before.trailing);
-        if (ReplicationPosition.compare(after.position, before.position) <= 0)
-            throw new IllegalStateException(
-                    "Snapshot HIGH marker did not follow LOW in the native stream");
-        if (!tables.equals(jdbc.discoverTables()))
-            throw new IllegalStateException(
-                    "Captured tables or schema changed during initial snapshot; restart with stable DDL");
-        checkRunning();
-        jdbc.cleanSignals(low, high);
-        LOG.info(
-                "HCS initial snapshot backfill completed at {}; publishing bounded snapshot batches",
-                after.position);
-        return new SnapshotPublication(config, buffer, after.position, observed, after.trailing);
+        try {
+            LOG.info(
+                    "Starting HCS initial snapshot for {} table(s); waiting for LOW signal",
+                    tables.size());
+            String low = "flink_low_" + UUID.randomUUID();
+            String high = "flink_high_" + UUID.randomUUID();
+            checkRunning();
+            jdbc.writeSignal(low);
+            Boundary before = awaitSignal(low, null, Collections.emptyList());
+            LOG.info(
+                    "HCS initial snapshot LOW committed at {}; starting JDBC scan",
+                    before.position);
+            // Do not apply interval WAL before all scan rows are loaded: an older JDBC image could
+            // otherwise overwrite a newer WAL value. The slot is not acknowledged during the scan.
+            jdbc.scan(
+                    tables,
+                    row -> {
+                        checkDeadline();
+                        buffer.addSnapshotRow(row);
+                    },
+                    running);
+            checkRunning();
+            jdbc.writeSignal(high);
+            LOG.info("HCS JDBC scan completed; waiting for HIGH and backfilling interval WAL");
+            Boundary after = awaitSignal(high, buffer, before.trailing);
+            if (ReplicationPosition.compare(after.position, before.position) <= 0)
+                throw new IllegalStateException(
+                        "Snapshot HIGH marker did not follow LOW in the native stream");
+            if (!tables.equals(jdbc.discoverTables()))
+                throw new IllegalStateException(
+                        "Captured tables or schema changed during initial snapshot; restart with stable DDL");
+            checkRunning();
+            jdbc.cleanSignals(low, high);
+            buffer.seal();
+            LOG.info(
+                    "HCS initial snapshot backfill completed at {}; publishing bounded snapshot batches",
+                    after.position);
+            return new SnapshotPublication(
+                    config, buffer, after.position, observed, after.trailing);
+        } catch (Exception | Error failure) {
+            try {
+                buffer.close();
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
     }
 
     private Boundary awaitSignal(

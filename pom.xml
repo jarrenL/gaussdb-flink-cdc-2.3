@@ -11,11 +11,18 @@
     <flink.table.runtime.artifact>flink-table-runtime</flink.table.runtime.artifact>
     <flink.cdc.version>2.3.0</flink.cdc.version>
     <gaussdb.jdbc.version>507.0.0.b071-cloudnative-jdk8</gaussdb.jdbc.version>
+    <h2.mvstore.version>2.2.224</h2.mvstore.version>
     <maven.compiler.source>8</maven.compiler.source>
     <maven.compiler.target>8</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
   <dependencies>
+    <!-- MVStore only: Java 8-compatible scratch key/value storage, no H2 SQL/JDBC server. -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2-mvstore</artifactId>
+      <version>${h2.mvstore.version}</version>
+    </dependency>
     <dependency>
       <groupId>com.ververica</groupId>
       <artifactId>flink-connector-debezium</artifactId>
@@ -124,7 +131,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
-        <version>3.4.1</version>
+        <version>3.6.0</version>
         <executions>
           <execution>
             <phase>package</phase>
@@ -135,6 +142,12 @@
               <shadedArtifactAttached>true</shadedArtifactAttached>
               <shadedClassifierName>all</shadedClassifierName>
               <createDependencyReducedPom>false</createDependencyReducedPom>
+              <relocations>
+                <relocation>
+                  <pattern>org.h2</pattern>
+                  <shadedPattern>io.github.jarrenl.gaussdb.cdc.internal.shaded.h2</shadedPattern>
+                </relocation>
+              </relocations>
               <artifactSet>
                 <excludes>
                   <exclude>org.slf4j:*</exclude>

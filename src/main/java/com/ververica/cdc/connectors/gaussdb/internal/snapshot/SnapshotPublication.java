@@ -30,13 +30,14 @@ import org.apache.kafka.connect.source.SourceRecord;
  * Publishes a fully backfilled image in bounded batches. CDC's snapshot=true records keep the
  * checkpoint lock held until the final snapshot=last record and its completed offset are emitted.
  */
-public final class SnapshotPublication {
+public final class SnapshotPublication implements AutoCloseable {
     private final GaussDBConfig config;
     private final SnapshotBackfillBuffer buffer;
     private final String high;
     private final String observed;
     private List<WalChange> trailing;
     private boolean snapshotComplete;
+    private boolean closed;
     private boolean trailingPending;
 
     SnapshotPublication(
@@ -53,11 +54,12 @@ public final class SnapshotPublication {
         this.trailingPending = ReplicationPosition.compare(observed, high) > 0;
     }
 
-    public boolean hasNext() {
-        return !snapshotComplete || trailingPending;
+    public synchronized boolean hasNext() {
+        return !closed && (!snapshotComplete || trailingPending);
     }
 
-    public SourceRecord next() {
+    public synchronized SourceRecord next() {
+        if (closed) throw new IllegalStateException("Snapshot publication is closed");
         if (!snapshotComplete) {
             List<WalChange> rows =
                     buffer.drain(
@@ -65,7 +67,9 @@ public final class SnapshotPublication {
                             config.positiveInt("scan.snapshot.batch.rows", 1000),
                             config.positiveInt("scan.snapshot.batch.bytes", 1048576));
             snapshotComplete = buffer.isEmpty();
-            return CommittedBatch.snapshot(config, rows, high, snapshotComplete);
+            SourceRecord record = CommittedBatch.snapshot(config, rows, high, snapshotComplete);
+            if (snapshotComplete) buffer.close();
+            return record;
         }
         if (trailingPending) {
             SourceRecord record = CommittedBatch.create(config, trailing, observed);
@@ -74,5 +78,14 @@ public final class SnapshotPublication {
             return record;
         }
         throw new NoSuchElementException("Snapshot publication is complete");
+    }
+
+    @Override
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        trailing = null;
+        trailingPending = false;
+        buffer.close();
     }
 }
