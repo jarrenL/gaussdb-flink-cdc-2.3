@@ -30,6 +30,7 @@ import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.junit.jupiter.api.Test;
 
@@ -83,6 +84,13 @@ class InitialSnapshotTest {
                         new JsonDebeziumDeserializationSchema(), Collections.emptyList())
                 .deserialize(record, ConfigurationAndRowTest.collector(output));
         return output;
+    }
+
+    static List<SourceRecord> collect(InitialSnapshot snapshot) throws Exception {
+        SnapshotPublication publication = snapshot.prepare();
+        List<SourceRecord> records = new ArrayList<>();
+        while (publication.hasNext()) records.add(publication.next());
+        return records;
     }
 
     @Test
@@ -170,7 +178,7 @@ class InitialSnapshotTest {
                                             .getValue()
                                             .equals(i.getArgument(1));
                         });
-        List<SourceRecord> result = new InitialSnapshot(config, jdbc, stream, () -> true).execute();
+        List<SourceRecord> result = collect(new InitialSnapshot(config, jdbc, stream, () -> true));
         assertThat(result).hasSize(2);
         assertThat(json(result.get(0)))
                 .hasSize(2)
@@ -296,7 +304,7 @@ class InitialSnapshotTest {
         JdbcSnapshotAccess jdbc = mock(JdbcSnapshotAccess.class);
         when(jdbc.discoverTables()).thenReturn(Collections.singletonList(table()));
         WalReplicationStream stream = mock(WalReplicationStream.class);
-        assertThatThrownBy(() -> new InitialSnapshot(config(), jdbc, stream, () -> false).execute())
+        assertThatThrownBy(() -> new InitialSnapshot(config(), jdbc, stream, () -> false).prepare())
                 .isInstanceOf(InterruptedException.class);
         verify(jdbc, never()).writeSignal(anyString());
         verify(stream, never()).acknowledgeLsn(anyString());
@@ -348,7 +356,7 @@ class InitialSnapshotTest {
         }
 
         List<SourceRecord> execute() throws Exception {
-            return new InitialSnapshot(config, jdbc, stream, () -> true).execute();
+            return collect(new InitialSnapshot(config, jdbc, stream, () -> true));
         }
     }
 
@@ -419,5 +427,59 @@ class InitialSnapshotTest {
         assertThat(rows.get(0).getRowKind()).isEqualTo(org.apache.flink.types.RowKind.INSERT);
         assertThat(rows.get(0).getInt(0)).isEqualTo(1);
         assertThat(rows.get(0).getString(1).toString()).isEqualTo("全量");
+    }
+
+    @Test
+    void mergedImageIsPublishedInBoundedBatchesWithOnlyFinalOffsetComplete() throws Exception {
+        Map<String, String> options = options();
+        options.put("scan.snapshot.batch.rows", "2");
+        Fixture fixture = new Fixture(options);
+        doAnswer(
+                        i -> {
+                            java.util.function.Consumer<WalChange> output = i.getArgument(1);
+                            for (int id = 1; id <= 5; id++) output.accept(insert(id, "row", LOW));
+                            return null;
+                        })
+                .when(fixture.jdbc)
+                .scan(anyList(), any(), any());
+        List<SourceRecord> records = fixture.execute();
+        assertThat(records).hasSize(3);
+        assertThat(((Struct) records.get(0).value()).getArray("rows")).hasSize(2);
+        assertThat(((Struct) records.get(1).value()).getArray("rows")).hasSize(2);
+        assertThat(((Struct) records.get(2).value()).getArray("rows")).hasSize(1);
+        for (int i = 0; i < records.size(); i++) {
+            SourceRecord record = records.get(i);
+            boolean last = i == records.size() - 1;
+            assertThat(((Struct) record.value()).getStruct("source").getString("snapshot"))
+                    .isEqualTo(last ? "last" : "true");
+            assertThat(
+                            io.debezium.connector.SnapshotRecord.fromSource(
+                                    ((Struct) record.value()).getStruct("source")))
+                    .isEqualTo(
+                            last
+                                    ? io.debezium.connector.SnapshotRecord.LAST
+                                    : io.debezium.connector.SnapshotRecord.TRUE);
+            assertThat(record.sourceOffset().get("gaussdb_snapshot_completed")).isEqualTo(last);
+            if (!last)
+                assertThatThrownBy(
+                                () -> fixture.config.validateSnapshotOffset(record.sourceOffset()))
+                        .hasMessageContaining("completed snapshot checkpoint");
+            else fixture.config.validateSnapshotOffset(record.sourceOffset());
+            assertThat(json(record))
+                    .allSatisfy(row -> assertThat(row).contains("\"op\":\"r\"", HIGH));
+        }
+        verify(fixture.stream, never()).acknowledgeLsn(anyString());
+    }
+
+    @Test
+    void drainingHonorsByteTargetAndReleasesRowsWithoutSplittingSingleRows() {
+        SnapshotBackfillBuffer buffer =
+                new SnapshotBackfillBuffer(config(), Collections.singletonList(table()));
+        buffer.addSnapshotRow(insert(1, "one", LOW));
+        buffer.addSnapshotRow(insert(2, "two", LOW));
+        assertThat(buffer.drain(HIGH, 10, 1)).hasSize(1);
+        assertThat(buffer.finish(HIGH)).hasSize(1);
+        assertThat(buffer.drain(HIGH, 10, 1)).hasSize(1);
+        assertThat(buffer.isEmpty()).isTrue();
     }
 }

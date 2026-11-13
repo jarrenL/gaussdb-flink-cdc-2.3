@@ -136,4 +136,79 @@ class InitialFrameworkCheckpointTest {
         }
         verify(jdbc, times(1)).scan(anyList(), any(), any());
     }
+
+    @Test
+    @Timeout(40)
+    void checkpointCannotPassBetweenSnapshotBatches() throws Exception {
+        FrameworkCheckpointTest.session = new FrameworkCheckpointTest.Session();
+        FrameworkCheckpointTest.Session session = FrameworkCheckpointTest.session;
+        session.pauseAfterFirstPoll = true;
+        JdbcSnapshotAccess jdbc = mock(JdbcSnapshotAccess.class);
+        session.snapshotAccess = jdbc;
+        when(jdbc.discoverTables())
+                .thenReturn(Collections.singletonList(InitialSnapshotTest.table()));
+        doAnswer(
+                        i -> {
+                            String token = i.getArgument(0);
+                            session.batches.add(
+                                    Collections.singletonList(
+                                            InitialSnapshotTest.signal(
+                                                    token,
+                                                    token.startsWith("flink_low_")
+                                                            ? InitialSnapshotTest.LOW
+                                                            : InitialSnapshotTest.HIGH)));
+                            return null;
+                        })
+                .when(jdbc)
+                .writeSignal(anyString());
+        when(jdbc.isSignal(any(), anyString()))
+                .thenAnswer(
+                        i -> {
+                            WalChange row = i.getArgument(0);
+                            return "signals".equals(row.getTable())
+                                    && row.getAfterColumns()
+                                            .get(0)
+                                            .getValue()
+                                            .equals(i.getArgument(1));
+                        });
+        doAnswer(
+                        i -> {
+                            Consumer<WalChange> output = i.getArgument(1);
+                            for (int id = 1; id <= 3; id++)
+                                output.accept(
+                                        InitialSnapshotTest.insert(
+                                                id, "snapshot", InitialSnapshotTest.LOW));
+                            return null;
+                        })
+                .when(jdbc)
+                .scan(anyList(), any(), any());
+        Map<String, String> options = InitialSnapshotTest.options();
+        options.put("scan.snapshot.batch.rows", "1");
+        FrameworkCheckpointTest.Harness h =
+                new FrameworkCheckpointTest.Harness(
+                        null, false, new GaussDBConfig(options).engineProperties());
+        try {
+            assertThat(h.firstRow.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(h.output).hasSize(1);
+            Future<byte[]> checkpoint = h.executor.submit(() -> h.snapshot(21));
+            Thread.sleep(100);
+            assertThat(checkpoint.isDone()).isFalse();
+            assertThat(session.acknowledgements).isEmpty();
+            session.continuePoll.countDown();
+            byte[] saved = checkpoint.get(10, TimeUnit.SECONDS);
+            assertThat(h.output).hasSize(3);
+            com.ververica.cdc.debezium.internal.DebeziumOffset offset =
+                    com.ververica.cdc.debezium.internal.DebeziumOffsetSerializer.INSTANCE
+                            .deserialize(saved);
+            assertThat(offset.sourceOffset.get("gaussdb_snapshot_completed")).isEqualTo(true);
+            assertThat(offset.sourceOffset.get("gaussdb_position"))
+                    .isEqualTo(InitialSnapshotTest.HIGH);
+            assertThat(session.acknowledgements).isEmpty();
+            h.source.notifyCheckpointComplete(21);
+            assertThat(session.acknowledgements).containsExactly(InitialSnapshotTest.HIGH);
+        } finally {
+            session.continuePoll.countDown();
+            h.close();
+        }
+    }
 }

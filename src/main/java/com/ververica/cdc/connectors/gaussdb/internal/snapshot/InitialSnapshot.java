@@ -19,7 +19,6 @@
 package com.ververica.cdc.connectors.gaussdb.internal.snapshot;
 
 import com.ververica.cdc.connectors.gaussdb.GaussDBConfig;
-import com.ververica.cdc.connectors.gaussdb.internal.CommittedBatch;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.ReplicationPosition;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalReplicationStream;
@@ -29,7 +28,6 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
-import org.apache.kafka.connect.source.SourceRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,7 +56,7 @@ public final class InitialSnapshot {
         this.running = running;
     }
 
-    public List<SourceRecord> execute() throws Exception {
+    public SnapshotPublication prepare() throws Exception {
         deadline =
                 System.nanoTime()
                         + TimeUnit.SECONDS.toNanos(
@@ -96,16 +94,10 @@ public final class InitialSnapshot {
                     "Captured tables or schema changed during initial snapshot; restart with stable DDL");
         checkRunning();
         jdbc.cleanSignals(low, high);
-        List<SourceRecord> result = new ArrayList<>();
-        result.add(CommittedBatch.snapshot(config, buffer.finish(after.position), after.position));
         LOG.info(
-                "HCS initial snapshot backfill completed at {}; publishing one atomic snapshot batch",
+                "HCS initial snapshot backfill completed at {}; publishing bounded snapshot batches",
                 after.position);
-        // A read may contain HIGH and later committed transactions. Never discard that suffix,
-        // and never acknowledge it as part of the snapshot's HIGH offset alone.
-        if (ReplicationPosition.compare(observed, after.position) > 0)
-            result.add(CommittedBatch.create(config, after.trailing, observed));
-        return result;
+        return new SnapshotPublication(config, buffer, after.position, observed, after.trailing);
     }
 
     private Boundary awaitSignal(

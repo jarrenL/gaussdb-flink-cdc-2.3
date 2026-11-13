@@ -54,7 +54,8 @@ public final class CommittedBatch {
     private static final Schema SOURCE =
             SchemaBuilder.struct()
                     .name("gaussdb.internal.Source")
-                    .field("snapshot", Schema.STRING_SCHEMA)
+                    // SnapshotRecord.fromSource ignores plain STRING schemas, even for "true".
+                    .field("snapshot", io.debezium.data.Enum.schema("true,last,false,incremental"))
                     .field("ts_ms", Schema.INT64_SCHEMA)
                     .build();
     private static final Schema BATCH =
@@ -68,16 +69,25 @@ public final class CommittedBatch {
 
     public static SourceRecord create(
             GaussDBConfig config, List<WalChange> changes, String position) {
-        return create(config, changes, position, false);
+        return create(config, changes, position, "false", true);
     }
 
     public static SourceRecord snapshot(
             GaussDBConfig config, List<WalChange> changes, String position) {
-        return create(config, changes, position, true);
+        return snapshot(config, changes, position, true);
+    }
+
+    public static SourceRecord snapshot(
+            GaussDBConfig config, List<WalChange> changes, String position, boolean last) {
+        return create(config, changes, position, last ? "last" : "true", last);
     }
 
     private static SourceRecord create(
-            GaussDBConfig config, List<WalChange> changes, String position, boolean snapshot) {
+            GaussDBConfig config,
+            List<WalChange> changes,
+            String position,
+            String snapshot,
+            boolean snapshotCompleted) {
         List<Struct> rows = new ArrayList<>();
         for (WalChange change : changes) {
             if (!config.matches(change.getSchema(), change.getTable())) continue;
@@ -96,13 +106,13 @@ public final class CommittedBatch {
                         .put(
                                 "source",
                                 new Struct(SOURCE)
-                                        .put("snapshot", snapshot ? "last" : "false")
+                                        .put("snapshot", snapshot)
                                         .put("ts_ms", System.currentTimeMillis()))
                         .put("rows", rows);
         Map<String, Object> offset = new HashMap<>();
         offset.put(POSITION, position);
         if (config.initialSnapshot()) {
-            offset.put("gaussdb_snapshot_completed", true);
+            offset.put("gaussdb_snapshot_completed", snapshotCompleted);
             offset.put("gaussdb_snapshot_scope", config.snapshotScope());
         }
         return new SourceRecord(config.partition(), offset, "gaussdb.committed", BATCH, batch);

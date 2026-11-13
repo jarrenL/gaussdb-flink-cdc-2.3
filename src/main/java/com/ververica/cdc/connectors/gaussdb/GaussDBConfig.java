@@ -58,6 +58,8 @@ public final class GaussDBConfig implements Serializable {
         positiveInt("scan.snapshot.max.rows", 100000);
         positiveInt("scan.snapshot.max.bytes", 67108864);
         positiveInt("scan.snapshot.fetch.size", 1000);
+        positiveInt("scan.snapshot.batch.rows", 1000);
+        positiveInt("scan.snapshot.batch.bytes", 1048576);
         positiveInt("scan.snapshot.timeout.seconds", 300);
         if (!java.util.Arrays.asList("true", "false").contains(get("scan.slot.create", "true")))
             throw new IllegalArgumentException("scan.slot.create must be true or false");

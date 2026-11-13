@@ -1,5 +1,23 @@
 # 验证记录
 
+## 2026-11-13：补全指南核查后的 ACK 与安全分批修正
+
+在 `c793e12` 基础上补齐 applied/flushed/status ACK，并将完整区间合并后的全量结果按
+有界批次输出。使用 Debezium 逻辑枚举 snapshot 字段保持跨批次快照 checkpoint 锁；
+仅最后一批设置全量完成 offset。总缓冲区限制保持不变，大表分块/落盘未实现。
+
+执行 `scripts/verify-matrix.sh`：Flink 1.13.6、1.14.6、1.15.4、1.16.3 每版均通过
+142 项测试，失败/错误/跳过均为 0。新增跨 poll 门闩测试证明首批输出、后续批次暂停时
+checkpoint 不能完成，最终批次结束后才记录 HIGH 并由完成回调 ACK。
+真实 507 合成报文同时核对三段 applied/flushed，setter 失败不继续 flushed/status。
+此外验证输出批次行数、估算字节控制，以及中间批 offset 不可作为已完成全量恢复。
+
+最终包 SHA-256：`3b0097ccac46c32fcb49bbe9c92e611b1e72974fb4232edeeb811687a8c9b44c`。
+包内含 SnapshotPublication 和 Debezium Enum，未包含 Flink streaming 引擎类。
+未连接真实 HCS；扫描全局可见性与建槽前在途长事务的完整捕获仍待内网确认。
+[逐项核查结果与待确认项](docs/HCS_DRS_SUPPLEMENT_REVIEW.md)。
+
+
 ## 2026-11-13：CDC 2.3 在线 initial 实验实现
 
 分支 `feature/hcs-cdc23-initial-handoff`，官方 CDC 2.3.0、507 CloudNative JDBC、JDK 11，

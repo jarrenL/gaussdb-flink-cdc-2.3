@@ -87,6 +87,8 @@ public final class GaussDBTableFactory implements DynamicTableSourceFactory {
                 "scan.snapshot.max.rows",
                 "scan.snapshot.max.bytes",
                 "scan.snapshot.fetch.size",
+                "scan.snapshot.batch.rows",
+                "scan.snapshot.batch.bytes",
                 "scan.snapshot.timeout.seconds",
                 "scan.slot.create",
                 "output.format",

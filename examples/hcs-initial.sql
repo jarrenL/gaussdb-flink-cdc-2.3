@@ -20,6 +20,8 @@ CREATE TABLE hcs_initial_changes (event STRING) WITH (
   'scan.snapshot.max.rows' = '100000',
   'scan.snapshot.max.bytes' = '67108864',
   'scan.snapshot.fetch.size' = '1000',
+  'scan.snapshot.batch.rows' = '1000',
+  'scan.snapshot.batch.bytes' = '1048576',
   'scan.snapshot.timeout.seconds' = '300',
   'output.format' = 'json',
   'sslmode' = 'require'

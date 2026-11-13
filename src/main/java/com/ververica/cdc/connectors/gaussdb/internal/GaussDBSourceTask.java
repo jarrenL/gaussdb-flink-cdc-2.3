@@ -22,6 +22,7 @@ import com.ververica.cdc.connectors.gaussdb.GaussDBConfig;
 import com.ververica.cdc.connectors.gaussdb.internal.snapshot.HcsSlotLifecycle;
 import com.ververica.cdc.connectors.gaussdb.internal.snapshot.InitialSnapshot;
 import com.ververica.cdc.connectors.gaussdb.internal.snapshot.JdbcSnapshotAccess;
+import com.ververica.cdc.connectors.gaussdb.internal.snapshot.SnapshotPublication;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.ReplicationPosition;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalReplicationStream;
@@ -43,6 +44,7 @@ public class GaussDBSourceTask extends SourceTask {
     private volatile boolean running;
     private boolean initialProgress;
     private boolean snapshotPending;
+    private volatile SnapshotPublication publication;
     private volatile String lastRead;
     private String acknowledged;
 
@@ -67,6 +69,7 @@ public class GaussDBSourceTask extends SourceTask {
             stream.setHcsMultiPrimary(true, config.replicationAuthentication());
             stream.initialize(lastRead);
             running = true;
+            publication = null;
             snapshotPending = config.initialSnapshot() && offset == null;
             initialProgress = true;
         } catch (Exception e) {
@@ -106,24 +109,35 @@ public class GaussDBSourceTask extends SourceTask {
     @Override
     public List<SourceRecord> poll() throws InterruptedException {
         if (!running) return null;
-        if (snapshotPending) {
+        if (snapshotPending || publication != null) {
             try {
-                List<SourceRecord> records =
-                        new InitialSnapshot(
-                                        config,
-                                        createSnapshotAccess(config, connection),
-                                        stream,
-                                        () -> running)
-                                .execute();
-                lastRead = requirePosition(records.get(records.size() - 1).sourceOffset());
-                snapshotPending = false;
-                initialProgress = false;
-                return records;
+                SnapshotPublication current = publication;
+                if (current == null) {
+                    current =
+                            new InitialSnapshot(
+                                            config,
+                                            createSnapshotAccess(config, connection),
+                                            stream,
+                                            () -> running)
+                                    .prepare();
+                    publication = current;
+                    snapshotPending = false;
+                    initialProgress = false;
+                }
+                if (!running || Thread.currentThread().isInterrupted())
+                    throw new InterruptedException("Initial snapshot publication cancelled");
+                SourceRecord record = current.next();
+                if (Boolean.TRUE.equals(record.sourceOffset().get("gaussdb_snapshot_completed")))
+                    lastRead = requirePosition(record.sourceOffset());
+                if (!current.hasNext()) publication = null;
+                return Collections.singletonList(record);
             } catch (InterruptedException e) {
+                publication = null;
                 throw e;
             } catch (Exception e) {
+                publication = null;
                 throw new ConnectException(
-                        "HCS initial snapshot failed before publication; restart from the completed Flink checkpoint",
+                        "HCS initial snapshot failed; restart from the completed Flink checkpoint",
                         e);
             }
         }
@@ -186,6 +200,7 @@ public class GaussDBSourceTask extends SourceTask {
     @Override
     public synchronized void stop() {
         running = false;
+        publication = null;
         if (stream != null) stream.close();
         if (connection != null)
             try {

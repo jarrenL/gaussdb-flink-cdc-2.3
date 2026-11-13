@@ -34,6 +34,8 @@ DDL 由管理员在目标版本执行，连接器不会自动建信号表、建 
 'scan.snapshot.max.rows' = '100000',
 'scan.snapshot.max.bytes' = '67108864',
 'scan.snapshot.fetch.size' = '1000',
+'scan.snapshot.batch.rows' = '1000',
+'scan.snapshot.batch.bytes' = '1048576',
 'scan.snapshot.timeout.seconds' = '300'
 ```
 
@@ -55,7 +57,7 @@ DDL 由管理员在目标版本执行，连接器不会自动建信号表、建 
     → 扫描结束后提交 HIGH 信号
     → 读取并按主键合并 (LOW, HIGH] 的所有完整事务
     → 再次核对表集合、关系 OID、列类型和主键
-    → 在一个内部批事件中输出合并后的全量行，保存 HIGH 与全量完成标记
+    → 将合并后的全量行分批输出，最后一批才保存 HIGH 与全量完成标记
     → 保留同次读取中 HIGH 之后的完整事务，接着进入持续增量
 ```
 
@@ -78,9 +80,18 @@ INSERT；后续增量为 INSERT、UPDATE_BEFORE/UPDATE_AFTER、DELETE。
 全量读取、合并期间不发布业务行，也不确认复制槽位置。此时的 checkpoint 不带“全量完成”
 offset，失败后重新执行整个全量；首版不从半张表或分块游标继续。
 
-合并完成后的全部全量行和 HIGH offset 在官方 CDC fetcher 的同一 checkpoint 临界区输出。
-其内部快照批标记为 `last`，保证首个批结束后进入持续增量。只有 completed checkpoint
-回调通过 `SourceTask.commitRecord` 调用 native stream 的 applied/flushed ACK。
+合并完成后按 `scan.snapshot.batch.rows`（默认 1000 行）与
+`scan.snapshot.batch.bytes`（默认约 1 MiB 估算数据）分批输出，并释放已输出的缓冲行。
+单行不可拆分，大于字节目标的单行独占一批，仍受全量缓冲总上限约束。
+首批和中间批的内部 `source.snapshot=true`、`gaussdb_snapshot_completed=false`；
+只有最后一批为 `source.snapshot=last`、完成标记为 true。snapshot 字段使用 Debezium 的
+`io.debezium.data.Enum` 逻辑类型，普通 STRING 会被 CDC 2.3 的快照识别逻辑忽略。
+
+官方 fetcher 因此在所有全量批次期间持续持有同一 checkpoint 锁，不能在批次之间保存
+半份全量对应的 HIGH 完成位点。最后一批之后才进入持续增量并释放锁。仅 completed
+checkpoint 回调通过 `SourceTask.commitRecord` 按顺序调用 native stream 的
+`setAppliedLSN`、`setFlushedLSN`、`forceUpdateStatus`；调用失败会报错，不记为 ACK 成功。
+这是输出分批，不是分块 checkpoint；输出时间长时仍要相应设置 Flink checkpoint 超时。
 
 恢复时同时验证租户/数据库/槽、三段位点、全量完成标记与表选择/信号表配置。将旧增量
 checkpoint 切换成 initial 会被拒绝，避免误跳过全量；改变表选择也需要新作业和完整初始化。
@@ -112,7 +123,8 @@ checkpoint 切换成 initial 会被拒绝，避免误跳过全量；改变表选
   缺失镜像、列类型变化、已观察到的位点乱序均报错。后续行模式还要求完整 before 镜像，
   JSON 增量可保持实际提供的部分 before。
 - 初始全量是**整份有界内存合并**，不是大表分块快照。默认最多 100000 行和约 64 MiB
-  缓冲区估算数据；后续 Kafka Struct、JSON 序列化和 Flink 输出队列会额外占用内存。
+  缓冲区估算数据；输出分批降低 Kafka Struct、JSON 序列化和队列的额外内存峰值，
+  未取消总上限。超限仍在发布前失败，尚未实现大表分块或磁盘溢写。
   不应把 max.bytes 当成 JVM 总内存保证。大事务还有既有 native 解码缓冲压力。
 - 必须暂停表结构变更和 TRUNCATE。前后目录核对能发现部分结构变化，不能检测所有 DDL。
   信号须能在同一复制流中出现，扫描连接须具备提交后的全局可见性，复制流须提供跨写节点
@@ -136,3 +148,5 @@ checkpoint 切换成 initial 会被拒绝，避免误跳过全量；改变表选
 
 构建与本地验证：`mvn -Pflink-1.16 clean verify`、`mvn spotless:check`。
 本地回归测试使用真实官方 CDC 引擎/507 驱动与受控 SQL/复制流；尚无真机验收结论。
+
+针对后续内网补全指南的逐项核查，见[补全指南核查与处理](HCS_DRS_SUPPLEMENT_REVIEW.md)。

@@ -703,11 +703,14 @@ public class WalReplicationStream {
             Method valueOfMethod = lsnClass.getMethod("valueOf", String.class);
             Object lsnObj = valueOfMethod.invoke(null, lsn);
 
+            Method setAppliedLSN =
+                    replicationStream.getClass().getMethod("setAppliedLSN", lsnClass);
+            setAppliedLSN.invoke(replicationStream, lsnObj);
             Method setFlushedLSN =
                     replicationStream.getClass().getMethod("setFlushedLSN", lsnClass);
             setFlushedLSN.invoke(replicationStream, lsnObj);
         } catch (Exception e) {
-            throw new SQLException("Could not update flushed LSN " + lsn, e);
+            throw new SQLException("Could not update applied/flushed LSN " + lsn, e);
         }
     }
 

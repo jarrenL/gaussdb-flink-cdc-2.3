@@ -50,7 +50,7 @@ public final class TransactionDeserializer<T> implements DebeziumDeserialization
                     .field("db", Schema.STRING_SCHEMA)
                     .field("schema", Schema.STRING_SCHEMA)
                     .field("table", Schema.STRING_SCHEMA)
-                    .field("snapshot", Schema.STRING_SCHEMA)
+                    .field("snapshot", io.debezium.data.Enum.schema("true,last,false,incremental"))
                     .field("ts_ms", Schema.INT64_SCHEMA)
                     .field("position", Schema.STRING_SCHEMA)
                     .build();

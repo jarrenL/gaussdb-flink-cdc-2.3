@@ -81,6 +81,16 @@ class FrameworkCheckpointTest {
     }
 
     public static class FakeTask extends GaussDBSourceTask {
+        @Override
+        public List<org.apache.kafka.connect.source.SourceRecord> poll()
+                throws InterruptedException {
+            Session current = session;
+            if (current.pauseAfterFirstPoll && current.pollCalls.incrementAndGet() > 1)
+                if (!current.continuePoll.await(10, TimeUnit.SECONDS))
+                    throw new IllegalStateException("Test publication gate timed out");
+            return super.poll();
+        }
+
         protected void prepareInitialSlot(GaussDBConfig config, Connection sql, String restored) {
             session.slotPreparations.add(restored == null ? "NEW" : restored);
         }
@@ -99,6 +109,10 @@ class FrameworkCheckpointTest {
     }
 
     static class Session {
+        boolean pauseAfterFirstPoll;
+        final java.util.concurrent.atomic.AtomicInteger pollCalls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        final CountDownLatch continuePoll = new CountDownLatch(1);
         JdbcSnapshotAccess snapshotAccess;
         final List<String> slotPreparations = new CopyOnWriteArrayList<>();
         final BlockingQueue<List<WalChange>> batches = new LinkedBlockingQueue<>();

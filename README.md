@@ -127,6 +127,8 @@ JSON 模式下，UPDATE/DELETE 的 `before` 只包含 WAL 实际提供的旧列�
 | `scan.snapshot.max.rows` | `100000` | 全量合并缓冲区行数上限 |
 | `scan.snapshot.max.bytes` | `67108864` | 全量合并缓冲区估算字节上限，并非 JVM 总内存上限 |
 | `scan.snapshot.fetch.size` | `1000` | JDBC 扫描游标 fetch 大小，并非断点分块大小 |
+| `scan.snapshot.batch.rows` | `1000` | 合并完成后的全量输出批次行数上限 |
+| `scan.snapshot.batch.bytes` | `1048576` | 全量输出每批估算字节目标，单个大行独占一批 |
 | `scan.snapshot.timeout.seconds` | `300` | 全量与 LOW/HIGH 边界等待时限；同时作为单条扫描 SQL 超时 |
 | `output.format` | `row` | `row` 或 `json` |
 | `server-time-zone` | `UTC` | 官方行反序列化器使用的时区 |

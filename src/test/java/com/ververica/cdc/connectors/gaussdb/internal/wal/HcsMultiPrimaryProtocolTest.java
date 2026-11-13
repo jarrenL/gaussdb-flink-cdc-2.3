@@ -206,6 +206,14 @@ class HcsMultiPrimaryProtocolTest {
                             .array());
         }
 
+        long[] applied() throws Exception {
+            nativeStream.forceUpdateStatus();
+            byte[] bytes = replies.get(replies.size() - 1);
+            ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            b.position(65);
+            return new long[] {b.getLong(), b.getLong(), b.getLong()};
+        }
+
         long[] flushed() throws Exception {
             nativeStream.forceUpdateStatus();
             byte[] bytes = replies.get(replies.size() - 1);
@@ -495,8 +503,10 @@ class HcsMultiPrimaryProtocolTest {
         assertThat(wal.readChanges(100)).hasSize(1);
         assertThat(wal.getLastLsn()).isEqualTo(FIRST);
         assertThat(session.flushed()).containsExactly(0, 0, 0);
+        assertThat(session.applied()).containsExactly(0, 0, 0);
         wal.acknowledgeLsn(FIRST);
         assertThat(session.flushed()).containsExactly(100, 2, 4096);
+        assertThat(session.applied()).containsExactly(100, 2, 4096);
         session.packet("0/65,0/1,0/2000", "unexpected");
         assertThatThrownBy(() -> wal.readChanges(100)).isInstanceOf(SQLException.class);
         assertThat(wal.getLastLsn()).isEqualTo(FIRST);
@@ -556,5 +566,21 @@ class HcsMultiPrimaryProtocolTest {
                 .isInstanceOf(SQLException.class)
                 .hasCauseInstanceOf(SQLException.class)
                 .hasStackTraceContaining("Logical replication payload is not valid UTF-8");
+    }
+
+    @Test
+    void failedAppliedUpdateFailsAckBeforeFlushedOrStatusAdvance() throws Exception {
+        Session session = new Session(ReplicationPosition.MULTI_PRIMARY_START);
+        WalReplicationStream wal = session.connector();
+        MultiPrimaryReplicationStream broken = mock(MultiPrimaryReplicationStream.class);
+        org.mockito.Mockito.doThrow(new IllegalStateException("applied failure"))
+                .when(broken)
+                .setAppliedLSN(any());
+        set(wal, "replicationStream", broken);
+        assertThatThrownBy(() -> wal.acknowledgeLsn(FIRST))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("applied/flushed");
+        verify(broken, never()).setFlushedLSN(any());
+        verify(broken, never()).forceUpdateStatus();
     }
 }

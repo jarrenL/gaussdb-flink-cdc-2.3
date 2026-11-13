@@ -22,6 +22,7 @@ import com.ververica.cdc.connectors.gaussdb.GaussDBConfig;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange;
 import com.ververica.cdc.connectors.gaussdb.internal.wal.WalChange.ColumnValue;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -85,6 +86,36 @@ public final class SnapshotBackfillBuffer {
                             row.getTable(),
                             row.getAfterColumns()));
         return output;
+    }
+
+    /** Drain the merged image after HIGH. No scan/backfill row is published before that point. */
+    public List<WalChange> drain(String highPosition, int maxRows, int maxBytes) {
+        if (maxRows <= 0 || maxBytes <= 0)
+            throw new IllegalArgumentException("Invalid snapshot batch limits");
+        List<WalChange> output = new ArrayList<>();
+        long bytes = 0;
+        Iterator<WalChange> iterator = rows.values().iterator();
+        while (iterator.hasNext() && output.size() < maxRows) {
+            WalChange row = iterator.next();
+            long rowBytes = size(row);
+            // A row is indivisible; allow one row larger than the batch byte target.
+            if (!output.isEmpty() && bytes + rowBytes > maxBytes) break;
+            output.add(
+                    WalChange.insert(
+                            highPosition,
+                            0,
+                            row.getSchema(),
+                            row.getTable(),
+                            row.getAfterColumns()));
+            bytes += rowBytes;
+            estimatedBytes -= rowBytes;
+            iterator.remove();
+        }
+        return output;
+    }
+
+    public boolean isEmpty() {
+        return rows.isEmpty();
     }
 
     private SnapshotTable requireTable(WalChange row) {
