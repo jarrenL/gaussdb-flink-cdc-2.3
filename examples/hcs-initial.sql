@@ -1,3 +1,7 @@
+-- Fresh initial jobs are BLOCKED by default: global scan visibility is unverified.
+-- For isolated experiments only, explicitly add this option to WITH:
+-- 'scan.snapshot.allow-unverified-consistency' = 'true',
+-- This opt-in does not verify consistency or implement a read barrier.
 -- Run the signal-table DDL from docs/HCS_CDC23_INITIAL_SNAPSHOT.md in the target PDB first.
 -- Source parallelism must be 1; configure reliable checkpoint storage for recovery tests.
 SET 'parallelism.default' = '1';

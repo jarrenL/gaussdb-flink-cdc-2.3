@@ -57,6 +57,7 @@ public final class InitialSnapshot {
     }
 
     public SnapshotPublication prepare() throws Exception {
+        config.requireSnapshotExperimentOptIn();
         deadline =
                 System.nanoTime()
                         + TimeUnit.SECONDS.toNanos(

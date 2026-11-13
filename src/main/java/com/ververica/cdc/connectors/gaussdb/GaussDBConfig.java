@@ -63,6 +63,10 @@ public final class GaussDBConfig implements Serializable {
         positiveInt("scan.snapshot.timeout.seconds", 300);
         if (!java.util.Arrays.asList("true", "false").contains(get("scan.slot.create", "true")))
             throw new IllegalArgumentException("scan.slot.create must be true or false");
+        if (!java.util.Arrays.asList("true", "false")
+                .contains(get("scan.snapshot.allow-unverified-consistency", "false")))
+            throw new IllegalArgumentException(
+                    "scan.snapshot.allow-unverified-consistency must be true or false");
         positiveInt("connect.timeout.seconds", 15);
         positiveInt("poll.interval.ms", 100);
         positiveInt("batch.size", 1000);
@@ -144,6 +148,16 @@ public final class GaussDBConfig implements Serializable {
 
     public boolean initialSnapshot() {
         return "initial".equals(get("scan.startup.mode", "incremental"));
+    }
+
+    /** An experiment opt-in, not a check or guarantee of global read visibility. */
+    public void requireSnapshotExperimentOptIn() {
+        if (!"true".equals(get("scan.snapshot.allow-unverified-consistency", "false")))
+            throw new IllegalArgumentException(
+                    "Initial snapshot is blocked: cross-node scan visibility after LOW has not been verified. "
+                            + "Replication ACK/CSN allocation and GTM settings are not a visibility barrier. "
+                            + "scan.snapshot.allow-unverified-consistency=true permits isolated experiments only; "
+                            + "it does not establish consistency");
     }
 
     public boolean isSignalTable(String schema, String table) {

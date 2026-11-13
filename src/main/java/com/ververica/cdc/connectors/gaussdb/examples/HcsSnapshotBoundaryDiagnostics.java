@@ -54,6 +54,7 @@ public final class HcsSnapshotBoundaryDiagnostics {
         Class.forName("com.huawei.gaussdb.jdbc.Driver");
         try (Connection connection =
                 DriverManager.getConnection(config.jdbcUrl(), config.authentication())) {
+            printGtmSettings(connection);
             printSlot(connection, config.required("slot.name"));
             try {
                 connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
@@ -88,6 +89,30 @@ public final class HcsSnapshotBoundaryDiagnostics {
             }
         }
         System.out.println("PROBE_COMPLETE_NO_SLOT_MUTATION_NO_STREAM_ACK");
+    }
+
+    /** Reports this SQL connection's settings only; never infers a global visibility barrier. */
+    static void printGtmSettings(Connection connection) {
+        try (PreparedStatement statement =
+                connection.prepareStatement(
+                        "SELECT name, setting FROM pg_catalog.pg_settings "
+                                + "WHERE name IN ('enable_gtm_free', 'gtm_option') ORDER BY name")) {
+            statement.setQueryTimeout(15);
+            int count = 0;
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    System.out.println("gtm.local." + rows.getString(1) + "=" + rows.getString(2));
+                    count++;
+                }
+            }
+            System.out.println("gtm.settings.rows=" + count);
+        } catch (SQLException e) {
+            System.out.println("gtm.settings=unavailable");
+            System.out.println("gtm.settings.sqlstate=" + e.getSQLState());
+            System.out.println("gtm.settings.error_code=" + e.getErrorCode());
+        }
+        System.out.println("gtm.scope=local-sql-connection; not a cluster-wide check");
+        System.out.println("gtm.read_visibility=NOT_VERIFIED");
     }
 
     private static void printSlot(Connection connection, String slotName) throws SQLException {

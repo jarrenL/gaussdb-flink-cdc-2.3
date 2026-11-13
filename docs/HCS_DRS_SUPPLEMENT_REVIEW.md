@@ -3,6 +3,54 @@
 日期：2026-11-13。核查对象为基于 `c793e12` 的内网 DRS 对比与补全指南。
 本文件记录实现判断，未复制内网源码。基线仍是官方 Flink CDC 2.3.0，Source 采集模型。
 
+## 后续内网反馈：尚未完成一致性证明
+
+内网确认在已检查的 DRS 路径未找到显式等待全局可见 CSN 的操作；约 1ms 的 sleep 是
+时间戳精度补偿，不能作为读屏障。该结论不等同于内核不存在读取一致性机制，也不能证明
+LOW 提交后通过目标 HCS JDBC/COPY 路径扫描必然覆盖所有 LOW 之前的提交。
+
+补充中有几处需要进一步区分：
+
+- `confirmed_flush` / `confirmed_csn` 是复制消费者确认进度，不是某个业务读取节点的可见
+  进度。用它们等待 LOW，不能建立 JDBC 读取保证，还可能错误地混用未完成 checkpoint 的 ACK。
+  `next_csn` 是分配/事务序号相关信息；`oldest_csn` 等字段也需先有目标版本的明确语义，
+  不能根据字段名编造等待算法。
+- 参数判断不能只看 `enable_gtm_free=off`。分布式官方文档的 GTM-Free 条件为
+  `enable_gtm_free=on` **或** `gtm_option=2`；GTM/GTM-Lite 又依赖另一个参数取值。
+  这些是普通分布式 GTM 文档，不是目标 HCS Tenant/DStore 读取路径的能力认证。
+- “透明多写全量每表都全程持有 SHARE 锁”的描述与此前实际调用链不一致：此前有主键表
+  跳过锁，另有锁在 COPY 前提交释放的分支。不能据此确认所有表读取时都在锁内。
+  per-table CSN 过滤也无法单独找回起点之前已提交、扫描又看不到的行；目标 Applier 的
+  冲突修复无法修复从未读到且以后不再变更的行。
+
+代码现在将**首次 initial 默认关闭**：无完成 offset 时，在连接/建槽前拒绝启动。
+内部快照入口同样拒绝。只有隔离实验可显式设置
+`scan.snapshot.allow-unverified-consistency=true`，此开关不表示一致性已经验证。
+普通增量不受影响；已有完成 checkpoint 可继续恢复增量，这并不认证其历史全量基线。
+
+只读工具 `HcsSnapshotBoundaryDiagnostics` 新增查询当前 SQL 连接可见的
+`enable_gtm_free` 和 `gtm_option`。缺权限/缺参数时报告 unavailable 或空结果；始终输出
+`gtm.read_visibility=NOT_VERIFIED`，不自动放行任务，也不把本地参数当成全集群检查。
+
+可使用已配置的私有 properties 文件执行：
+
+```sh
+java -cp target/gaussdb-flink-cdc-2.3-0.1.0-SNAPSHOT-all.jar \
+  com.ververica.cdc.connectors.gaussdb.examples.HcsSnapshotBoundaryDiagnostics \
+  /secure/path/hcs.properties
+```
+
+下一步需要的是目标产品版本、实际读取路由，以及**内核对 JDBC/COPY 语句快照可见范围的
+明确契约或读屏障实现**。请重点确认：LOW 提交并返回后，后续每个扫描语句如何保证覆盖
+LOW 前在其他写节点的提交；是否存在可等待且有明确语义的读取可见水位；若依赖表锁，
+锁是否跨写节点生效、覆盖哪些表，并且是否持续到读取完成。以上暂未由现有反馈证明。
+
+参考证据及适用范围：
+
+- [分布式 GTM 模式判断](https://support.huaweicloud.com/intl/zh-cn/distributed-devg-v10-gaussdb/gaussdb-12-0742.html)：明确两项参数的组合；不作为 HCS 多写读取保证。
+- [GTM-Free 一致性限制](https://support.huaweicloud.com/distributed-devg-v10-gaussdb/gaussdb-12-0740.html)：普通分布式模式存在最终一致性限制。
+- [逻辑复制槽字段说明](https://support.huaweicloud.com/intl/en-us/distributed-devg-v8-gaussdb/distributed-devg-v8-gaussdb-pdf.pdf)：confirmed 字段描述客户端确认进度；不能替代读可见水位。
+
 ## 已修正的实际缺口
 
 ### ACK 同时更新 applied 与 flushed
@@ -44,7 +92,7 @@ X 的提交位点又小于 LOW，因此不会进入区间 backfill。如果直�
 HIGH 之后的版本。正常强一致读取与“允许从滞后副本返回旧结果”必须区分。请内网提供
 目标 HCS 版本的读取一致性承诺，或等待全局可见位点的 SQL/驱动接口；当前代码不把
 `next_csn` 当成节点可见水位，也没有伪造一个“已验证全局可见”的标志。
-在这个前提没有确认时，本实现仍只能标为实验性。
+在这个前提没有确认时，首次 initial 默认拒绝启动，只保留显式隔离实验入口。
 
 ### 长事务不能只靠提交 CSN 推断完整捕获
 

@@ -58,6 +58,7 @@ public class GaussDBSourceTask extends SourceTask {
         config = new GaussDBConfig(properties);
         Map<String, Object> offset = context.offsetStorageReader().offset(config.partition());
         if (offset != null) config.validateSnapshotOffset(offset);
+        if (config.initialSnapshot() && offset == null) config.requireSnapshotExperimentOptIn();
         lastRead =
                 offset == null ? ReplicationPosition.MULTI_PRIMARY_START : requirePosition(offset);
         acknowledged = lastRead;

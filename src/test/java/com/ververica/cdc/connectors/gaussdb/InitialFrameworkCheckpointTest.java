@@ -117,9 +117,11 @@ class InitialFrameworkCheckpointTest {
         FrameworkCheckpointTest.session = new FrameworkCheckpointTest.Session();
         FrameworkCheckpointTest.Session resumed = FrameworkCheckpointTest.session;
         // No snapshot-access instance is supplied: any attempt to scan after restore will fail.
+        Map<String, String> resumedOptions = InitialSnapshotTest.options();
+        resumedOptions.remove("scan.snapshot.allow-unverified-consistency");
         try (FrameworkCheckpointTest.Harness h =
                 new FrameworkCheckpointTest.Harness(
-                        saved, false, InitialSnapshotTest.config().engineProperties())) {
+                        saved, false, new GaussDBConfig(resumedOptions).engineProperties())) {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (resumed.start.get() == null && System.nanoTime() < deadline) Thread.sleep(10);
             assertThat(resumed.start.get()).isEqualTo(InitialSnapshotTest.HIGH);

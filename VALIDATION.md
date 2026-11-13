@@ -1,5 +1,26 @@
 # 验证记录
 
+## 2026-11-13：读取一致性未确认时默认拒绝首次全量
+
+内网补充仍未提供目标 HCS 租户的全局读取可见性契约或已验证读屏障。首次 initial
+默认在连接、建槽和扫描前拒绝启动；内部 InitialSnapshot.prepare 同样检查。
+只保留 `scan.snapshot.allow-unverified-consistency=true` 的隔离实验入口，此开关不证明
+一致性、不根据 GTM 参数或复制 ACK 自动放行。增量模式保持原行为。
+
+执行 `scripts/verify-matrix.sh`，Flink 1.13.6、1.14.6、1.15.4、1.16.3 每版均通过
+147 项测试，失败/错误/跳过均为 0。新增测试验证缺失/false 实验选项时没有建立连接，
+内部快照入口没有 SQL/WAL 交互，非法选项被拒绝；真实官方 CDC 框架恢复测试还验证
+已完成全量 checkpoint 可在移除实验选项后恢复增量，不重新扫描。
+
+只读 HcsSnapshotBoundaryDiagnostics 新增当前 SQL 连接的两项 GTM 参数查询。
+测试确认 off/2 组合、无权限或空结果均不产生已验证判断；错误仅输出 SQLSTATE 和错误码。
+始终输出 `gtm.read_visibility=NOT_VERIFIED`，不宣称集群参数一致或目标多写读取已验证。
+没有连接 HCS 真机，也没有证明或修复旧全量可能遗漏的基线数据。
+
+最终包 SHA-256：`350019f9c591aecb58be1851f60d32f77f51a9ecd7c5a162d2e46d8b2e5019da`。
+[内网反馈核查与具体内核确认项](docs/HCS_DRS_SUPPLEMENT_REVIEW.md)。
+
+
 ## 2026-11-13：补全指南核查后的 ACK 与安全分批修正
 
 在 `c793e12` 基础上补齐 applied/flushed/status ACK，并将完整区间合并后的全量结果按

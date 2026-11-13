@@ -44,6 +44,7 @@ class InitialSnapshotTest {
         Map<String, String> settings = TestConfig.options();
         settings.put("scan.startup.mode", "initial");
         settings.put("scan.snapshot.signal-table", "cdc_meta.signals");
+        settings.put("scan.snapshot.allow-unverified-consistency", "true");
         return settings;
     }
 

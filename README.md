@@ -5,7 +5,7 @@
 Debezium 引擎、反序列化接口及 checkpoint/offset 存储，并在底层接入配套 507 JDBC
 的 `MultiPrimaryReplicationStream`。不是原 JDBC 连接器仓库中的 `cdc-2.4.x` 模块。
 
-**当前支持增量联调，并新增实验性 `initial` 全量＋增量模式，尚未通过生产验收。** 真实透明多写实例的消息布局、解码选项、
+**当前支持增量联调；`initial` 全量＋增量原型因全局读取可见性未确认，首次启动默认关闭。** 真实透明多写实例的消息布局、解码选项、
 CMS 切换和节点故障恢复需要在目标 HCS 版本实测。普通 Distributed CN/DN 实例不能替代该验收。
 
 ## 版本与构建
@@ -45,7 +45,9 @@ mvn -Pflink-1.16 clean verify
 4. Flink TaskManager 必须能访问配置的 CMS 入口及 CMS 返回的租户节点地址。
 5. 源并行度设为 1，开启 checkpoint。初次启动从复制槽可用位置读取，不能把它当成“仅采集启动后数据”。
 
-`scan.startup.mode=initial` 新增有界的首次全量与源端日志合并，要求显式配置专用信号表、
+`scan.startup.mode=initial` 新增有界的首次全量与源端日志合并，首次全量默认在连接数据库和
+建槽之前拒绝启动。只允许隔离实验显式设置 `scan.snapshot.allow-unverified-consistency=true`；
+该选项不等待或验证全局可见性，不能用于宣称同步正确。原型同时要求专用信号表、
 有主键的普通表及源并行度 1。实现、信号表建表 SQL、资源限制与验收条件见
 [透明多写在线全量开发说明](docs/HCS_CDC23_INITIAL_SNAPSHOT.md)。默认仍为 `incremental`。
 若允许停写维护窗口，
@@ -123,6 +125,7 @@ JSON 模式下，UPDATE/DELETE 的 `before` 只包含 WAL 实际提供的旧列�
 | `sslmode` | `require` | 507 JDBC SSL 模式 |
 | `scan.startup.mode` | `incremental` | `incremental` 或实验性 `initial` |
 | `scan.snapshot.signal-table` | 无 | initial 必填，专用 `schema.table`；连接器在此写入并清理 LOW/HIGH 信号 |
+| `scan.snapshot.allow-unverified-consistency` | `false` | 仅隔离实验允许设 true；不提供一致性保证。首次 initial 默认在连接和建槽前失败 |
 | `scan.slot.create` | `true` | 仅 initial 首次启动可创建缺失的槽；恢复时缺槽始终失败 |
 | `scan.snapshot.max.rows` | `100000` | 全量合并缓冲区行数上限 |
 | `scan.snapshot.max.bytes` | `67108864` | 全量合并缓冲区估算字节上限，并非 JVM 总内存上限 |
