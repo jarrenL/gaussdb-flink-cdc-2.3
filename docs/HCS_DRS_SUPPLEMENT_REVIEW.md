@@ -142,3 +142,9 @@ DRS Applier 的 delete+insert、UPDATE 0 行补 before、DELETE 0 行忽略，�
 行；测试不能只覆盖 LOW~HIGH 区间内的写入。长事务要覆盖建槽前写入、HIGH 后提交。
 客户端 ACK 后，还需核对服务端确认位点及日志保留是否按预期推进。
 目前本地测试使用受控 SQL/复制流和真实官方 CDC/507 客户端，尚无 HCS 真机验收结论。
+
+## 输出契约已确认
+
+用户已选择保持通用 Flink CDC Source，不改为依赖目标 Applier 的数据库迁移作业。
+[Source 方案与只读快照导入探针](HCS_GENERIC_SOURCE_STRATEGY.md) 给出了重叠的 INSERT/UPDATE
+聚合反例、可借鉴的 DRS 部分，以及去掉信号表所需的候选接口契约。

@@ -1,5 +1,25 @@
 # 验证记录
 
+## 2026-11-13：保持通用 Source，新增只读跨会话导入探针
+
+用户明确选择保持可接聚合/计数的通用 Flink CDC Source。未将 handoff 改为依赖目标
+Applier 去重的迁移模型，也未仅靠 per-table CSN 过滤取消源端重叠处理。
+一致性前提未确认，首次 initial 默认关闭的限制继续生效。
+
+新增 HcsSnapshotImportDiagnostics：两个新 SQL 连接，同租户/数据库；导出侧保持
+REPEATABLE READ READ ONLY 事务直到导入侧检查结束；导入必须在 importer 的任何
+SHOW/SELECT 前完成；最后仅 rollback。无业务表读写、槽管理、复制流或 ACK。
+成功仍报告跨写节点可见性和 CSN/WAL 对应关系 NOT_VERIFIED，不自动启用 initial。
+
+执行 scripts/verify-matrix.sh，Flink 1.13.6、1.14.6、1.15.4、1.16.3 每版均通过
+151 项测试，失败/错误/跳过均为 0。新增测试核对导入顺序、导出事务生命周期、实际
+隔离级别降级、非法 snapshot ID、导入失败清理、既有事务保护、同租户/数据库检查和
+错误脱敏。实际目标 HCS 导出/导入尚未运行，无跨节点或快照/日志一致性验收结论。
+
+最终包 SHA-256：`49659d518d6f7d21d9fea8258cb4360765d4bd3f663cad8b4fd23ff86b138e0f`。
+[Source 方案区别与探针命令](docs/HCS_GENERIC_SOURCE_STRATEGY.md)。
+
+
 ## 2026-11-13：读取一致性未确认时默认拒绝首次全量
 
 内网补充仍未提供目标 HCS 租户的全局读取可见性契约或已验证读屏障。首次 initial
